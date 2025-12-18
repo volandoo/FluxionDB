@@ -19,6 +19,9 @@ const client = new FluxionDBClient({
     url: "ws://localhost:8080",
     apiKey: "YOUR_SECRET_KEY",
     connectionName: "docs-example",
+    // Optional: control initial retry behaviour when the socket can't be reached
+    maxReconnectAttempts: 5,
+    reconnectInterval: 5000, // ms
 });
 
 await client.connect();
