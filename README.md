@@ -244,6 +244,7 @@ Omit the `Key` pointer when calling `client.GetValues` to return the entire coll
 -   `clients/node/` – Node.js SDK (TypeScript)
 -   `clients/go/` – Go SDK
 -   `clients/python/` – Python SDK
+-   `cli/` – cross-platform command-line client (see [CLI.md](CLI.md))
 
 ---
 
