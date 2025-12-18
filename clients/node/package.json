@@ -1,6 +1,6 @@
 {
   "name": "@volandoo/fluxiondb-client",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "description": "Client library for FluxionDB",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
