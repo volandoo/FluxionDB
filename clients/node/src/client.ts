@@ -63,6 +63,8 @@ type ClientOptions = {
   apiKey: string;
   showLogs?: boolean;
   connectionName?: string;
+  maxReconnectAttempts?: number;
+  reconnectInterval?: number;
 };
 
 class Client {
@@ -72,8 +74,8 @@ class Client {
   private isConnecting: boolean = false; // Track if we're currently attempting to connect
   private isReconnecting: boolean = false; // Flag to prevent concurrent reconnect attempts
   private reconnectAttempts: number = 0;
-  private readonly maxReconnectAttempts: number = 5;
-  private readonly reconnectInterval: number = 5000; // milliseconds
+  private readonly maxReconnectAttempts: number;
+  private readonly reconnectInterval: number; // milliseconds
   private connectionPromise: Promise<void> | null = null; // Promise to track connection status
   private apiKey: string;
   private shouldReconnect: boolean = true; // Flag to track if reconnection should happen
@@ -85,11 +87,15 @@ class Client {
     apiKey,
     showLogs = false,
     connectionName,
+    maxReconnectAttempts = 5,
+    reconnectInterval = 5000,
   }: ClientOptions) {
     this.url = url;
     this.apiKey = apiKey;
     this.showLogs = showLogs;
     this.connectionName = connectionName;
+    this.maxReconnectAttempts = maxReconnectAttempts;
+    this.reconnectInterval = reconnectInterval;
   }
 
   public async connect(): Promise<void> {
@@ -111,6 +117,39 @@ class Client {
     this.isConnecting = true;
     this.connectionPromise = new Promise<void>((resolve, reject) => {
       let isAuthenticated = false; // Track if we received the "ready" message from server
+      let hasSettled = false; // Track if the promise has resolved or rejected
+      let handledFailure = false; // Prevent handling the same failure twice (error + close)
+
+      const handleInitialFailure = (errorMessage: string) => {
+        if (handledFailure) {
+          return;
+        }
+        handledFailure = true;
+        this.isConnecting = false;
+        this.connectionPromise = null;
+        this.ws = null;
+        this.cleanupOnClose();
+
+        if (this.reconnectAttempts < this.maxReconnectAttempts && this.shouldReconnect) {
+          const attempt = ++this.reconnectAttempts;
+          const delay = this.reconnectInterval * attempt;
+          if (this.showLogs) {
+            console.warn(
+              `Initial connection failed (${errorMessage}). Retrying in ${delay}ms... (${attempt}/${this.maxReconnectAttempts})`,
+            );
+          }
+
+          setTimeout(() => {
+            handledFailure = false; // Allow the next attempt to process its own failure
+            this.connect()
+              .then(resolve)
+              .catch(reject);
+          }, delay);
+        } else if (!hasSettled) {
+          hasSettled = true;
+          reject(new Error(errorMessage));
+        }
+      };
 
       try {
         // Append API key as query parameter instead of header
@@ -167,6 +206,7 @@ class Client {
                     console.log("Authentication successful");
                   }
                   isAuthenticated = true;
+                  hasSettled = true;
                   this.isConnecting = false;
                   this.reconnectAttempts = 0;
                   this.isReconnecting = false;
@@ -203,9 +243,7 @@ class Client {
 
         // If closed before authentication, it's an auth failure
         if (!isAuthenticated) {
-          reject(
-            new Error(`Authentication failed: ${reasonText || `code ${code}`}`),
-          );
+          handleInitialFailure(reasonText || `code ${code}`);
         } else if (this.shouldReconnect) {
           this.reconnect();
         }
@@ -213,16 +251,17 @@ class Client {
 
       // Handle error event
       const onError = (error: any) => {
-        console.error("WebSocket error:", error);
-        this.isConnecting = false;
-        this.connectionPromise = null; // Clear the promise on close/error
-        this.ws = null;
-        this.cleanupOnClose();
-
-        // If error before authentication, reject the connection promise
+        const errorMessage =
+          (error && (error.message || error.toString?.())) ||
+          "WebSocket connection error";
+        console.error("WebSocket error:", errorMessage, error);
         if (!isAuthenticated) {
-          reject(error || new Error("WebSocket connection error"));
+          handleInitialFailure(errorMessage);
         } else if (this.shouldReconnect) {
+          this.isConnecting = false;
+          this.connectionPromise = null; // Clear the promise on close/error
+          this.ws = null;
+          this.cleanupOnClose();
           this.reconnect(); // Treat errors like a close event and attempt reconnect
         }
       };
