@@ -112,11 +112,21 @@ main() {
         unzip -q "${archive_path}" -d "${WORKDIR}"
     fi
 
-    local extracted="${WORKDIR}/${TARGET_NAME}"
-    if [[ ! -f "${extracted}" ]]; then
-        extracted="${WORKDIR}/${BINARY_BASE_NAME}"
-        [[ -f "${extracted}" ]] || error "downloaded archive did not include ${TARGET_NAME}"
+    local extracted=""
+    for candidate in \
+        "${WORKDIR}/${TARGET_NAME}" \
+        "${WORKDIR}/${BINARY_BASE_NAME}" \
+        "${WORKDIR}/${BINARY_BASE_NAME}.exe"
+    do
+        if [[ -f "${candidate}" ]]; then
+            extracted="${candidate}"
+            break
+        fi
+    done
+    if [[ -z "${extracted}" && command -v find >/dev/null 2>&1 ]]; then
+        extracted="$(find "${WORKDIR}" -maxdepth 3 -type f \( -name "${TARGET_NAME}" -o -name "${BINARY_BASE_NAME}" -o -name "${BINARY_BASE_NAME}.exe" \) | head -n 1 || true)"
     fi
+    [[ -n "${extracted}" ]] || error "downloaded archive did not include ${TARGET_NAME}"
     chmod +x "${extracted}"
 
     ensure_dir "${INSTALL_DIR}"
