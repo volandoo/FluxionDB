@@ -98,7 +98,8 @@ main() {
         TARGET_NAME="${BINARY_BASE_NAME}.exe"
     fi
 
-    local asset_name="fluxiondb-${PLATFORM}-${ARCH}.${ARCHIVE_EXT}"
+    local asset_base="${BINARY_BASE_NAME}-${PLATFORM}-${ARCH}"
+    local asset_name="${asset_base}.${ARCHIVE_EXT}"
     local download_url="${DOWNLOAD_BASE}/${asset_name}"
 
     WORKDIR="$(mktemp -d)"
@@ -116,15 +117,23 @@ main() {
     for candidate in \
         "${WORKDIR}/${TARGET_NAME}" \
         "${WORKDIR}/${BINARY_BASE_NAME}" \
-        "${WORKDIR}/${BINARY_BASE_NAME}.exe"
+        "${WORKDIR}/${BINARY_BASE_NAME}.exe" \
+        "${WORKDIR}/${asset_base}" \
+        "${WORKDIR}/${asset_base}.exe"
     do
         if [[ -f "${candidate}" ]]; then
             extracted="${candidate}"
             break
         fi
     done
-    if [[ -z "${extracted}" && command -v find >/dev/null 2>&1 ]]; then
-        extracted="$(find "${WORKDIR}" -maxdepth 3 -type f \( -name "${TARGET_NAME}" -o -name "${BINARY_BASE_NAME}" -o -name "${BINARY_BASE_NAME}.exe" \) | head -n 1 || true)"
+    if [[ -z "${extracted}" ]] && command -v find >/dev/null 2>&1; then
+        extracted="$(find "${WORKDIR}" -maxdepth 3 -type f \( \
+            -name "${TARGET_NAME}" -o \
+            -name "${BINARY_BASE_NAME}" -o \
+            -name "${BINARY_BASE_NAME}.exe" -o \
+            -name "${asset_base}" -o \
+            -name "${asset_base}.exe" \
+        \) | head -n 1 || true)"
     fi
     [[ -n "${extracted}" ]] || error "downloaded archive did not include ${TARGET_NAME}"
     chmod +x "${extracted}"
