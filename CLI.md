@@ -38,3 +38,5 @@ fluxiondb fetch-collections --url wss://your-host:8080 --apikey YOUR_KEY
 ```
 
 See `cli/README.md` or `fluxiondb --help` for all commands and flags.
+
+> **AI agents:** use `SKILLS.md` for the FluxionDB CLI skill definition (trigger metadata plus workflow notes). Point them there when automations need to build, run, or script against this binary.
