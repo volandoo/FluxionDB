@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="${REPO:-volandoo/fluxiondb}"
 TAG_PREFIX="${TAG_PREFIX:-cli-v}"
 BINARY_BASE_NAME="fluxiondb"
-API_URL="https://api.github.com/repos/${REPO}/releases?per_page=25"
+API_URL="https://api.github.com/repos/volandoo/FluxionDB/releases?per_page=25"
 WORKDIR=""
 
 cleanup() {
