@@ -64,6 +64,9 @@ func exportCollection(client *fluxiondb.Client, col, outDir string) (exportSumma
 
 	totalRecords := 0
 	for _, doc := range docNames {
+		if doc == "" {
+			continue
+		}
 		count, err := exportDocument(client, col, doc, colDir)
 		if err != nil {
 			return exportSummary{}, fmt.Errorf("export document %s: %w", doc, err)
