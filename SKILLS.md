@@ -53,22 +53,26 @@ All subcommands share the persistent flags `--url`, `--apikey`, and optional `--
 Export writes JSON Lines plus key/value metadata:
 
 ```bash
-go run . export sessions \
+go run . export --col sessions \
   --out-dir tmp \
   --url ws://localhost:8080 \
   --apikey my-secret-key
 ```
 
-Output layout: `tmp/sessions/<doc>.jsonl` (one `{ts, doc, data}` per line) and `tmp/sessions/key_value.json`.
+Add `--api-keys` to fetch server API keys into `tmp/apikeys.json` or `--all` to export every collection plus API keys in one shot.
+
+Output layout: `tmp/sessions/<doc>.jsonl` (one `{ts, doc, data}` per line) and `tmp/sessions/key_value.json`, plus `tmp/apikeys.json` when API keys are included.
 
 Import replays the same structure (delete the destination collection first if you need a clean slate):
 
 ```bash
-go run . import sessions \
+go run . import --col sessions \
   --in-dir tmp \
   --url ws://localhost:8080 \
   --apikey my-secret-key
 ```
+
+Add `--api-keys` or `--all` to restore API keys from `tmp/apikeys.json`.
 
 Both commands emit JSON summaries suitable for logging or downstream automation.
 
@@ -78,4 +82,3 @@ Both commands emit JSON summaries suitable for logging or downstream automation.
 - `cli/README.md` documents persistent flags and high-level usage—skim it when unsure about flag semantics.
 - Tests: `cd cli && GOCACHE=$(pwd)/.gocache go test ./...`
 - When scripting, prefer `go run . ...` to avoid stale binaries unless determinism is required.
-

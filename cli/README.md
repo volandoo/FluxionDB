@@ -20,17 +20,16 @@ You can also pass an optional connection label:
 
 - `fetch-collections` – list collections.
 - `fetch-latest` – latest record per document (with optional regex filters).
-- `fetch-document` – records for a document within a time window.
 - `insert-record` – insert one record (raw JSON payload).
 - `set-value` / `get-values` / `delete-value` / `list-keys` – key/value operations.
 - `delete-document` / `delete-collection` – destructive actions.
 - `connections` – list active sockets.
 - `add-key` / `remove-key` – manage scoped API keys (requires master key).
-- `export [collection] --out-dir DIR` – dump every document to `DIR/<col>/<doc>.jsonl` along with `key_value.json`.
-- `import [collection] --in-dir DIR` – replay an export back into a live collection (documents + key/value pairs).
+- `export --col <collection> --out-dir DIR` – dump every document to `DIR/<col>/<doc>.jsonl` along with `key_value.json`. Add `--api-keys` or `--all` to also write `apikeys.json`.
+- `import --col <collection> --in-dir DIR` – replay an export back into a live collection. Combine with `--api-keys` or `--all` to restore API keys from `apikeys.json`.
 
 ### Export/import layout
 
-Exports create `DIR/<collection>` with one `<doc>.jsonl` per document (JSON Lines, one `{ts, doc, data}` record per line) and a `key_value.json` file containing the collection's key/value map. Imports expect the same structure; delete the target collection first if you need a clean slate.
+Exports create `DIR/<collection>` with one `<doc>.jsonl` per document (JSON Lines, one `{ts, doc, data}` per line) and a `key_value.json` file containing the collection's key/value map. When `--api-keys` or `--all` is provided, an `apikeys.json` file is written directly under `DIR/`. Imports expect the same layout and can also ingest `apikeys.json` to restore server credentials; delete the target collection first if you need a clean slate.
 
 All commands share `--url`, `--apikey`, and optional `--name` flags. See `--help` on any subcommand for details.

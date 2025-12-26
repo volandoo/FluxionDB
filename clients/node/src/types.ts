@@ -13,6 +13,12 @@ export type ManageApiKeyParams = {
   scope?: ApiKeyScope;
 };
 
+export type ApiKeyEntry = {
+  key: string;
+  scope: ApiKeyScope;
+  deletable: boolean;
+};
+
 export type AddApiKeyParams = {
   key: string;
   scope: ApiKeyScope;
@@ -27,6 +33,7 @@ export type ManageApiKeyResponse = {
   status?: string;
   error?: string;
   scope?: string;
+  keys?: ApiKeyEntry[];
 };
 
 export type InsertMessageResponse = {

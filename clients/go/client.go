@@ -522,6 +522,29 @@ func (c *Client) RemoveAPIKey(key string) (ManageAPIKeyResponse, error) {
 	return c.manageAPIKey(payload)
 }
 
+// ListAPIKeys fetches all registered API keys (master key required)
+func (c *Client) ListAPIKeys() ([]APIKeyInfo, error) {
+	payload := ManageAPIKeyParams{
+		Action: "list",
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var response ManageAPIKeyResponse
+	if err := c.send(messageTypeManageKeys, string(data), &response); err != nil {
+		return nil, err
+	}
+	if response.Error != "" {
+		return nil, errors.New(response.Error)
+	}
+	if response.Keys == nil {
+		return []APIKeyInfo{}, nil
+	}
+	return response.Keys, nil
+}
+
 func (c *Client) manageAPIKey(params ManageAPIKeyParams) (ManageAPIKeyResponse, error) {
 	data, err := json.Marshal(params)
 	if err != nil {

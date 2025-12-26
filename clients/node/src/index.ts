@@ -25,4 +25,5 @@ export type {
   AddApiKeyParams,
   RemoveApiKeyParams,
   ApiKeyScope,
+  ApiKeyEntry,
 } from "./types";

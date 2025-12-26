@@ -931,6 +931,20 @@ QString WebSocket::handleManageApiKey(QWebSocket *client, const MessageRequest &
             response["error"] = errorMessage;
         }
     }
+    else if (action == "list")
+    {
+        QJsonArray keysArray;
+        for (const auto &pair : m_apiKeys)
+        {
+            QJsonObject keyObj;
+            keyObj["key"] = pair.first;
+            keyObj["scope"] = scopeToString(pair.second.scope);
+            keyObj["deletable"] = pair.second.deletable;
+            keysArray.append(keyObj);
+        }
+        response["status"] = "ok";
+        response["keys"] = keysArray;
+    }
     else
     {
         response["error"] = "unknown action";

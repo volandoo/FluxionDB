@@ -8,6 +8,7 @@ import (
 const (
 	documentExt     = ".jsonl"
 	keyValueFile    = "key_value.json"
+	apiKeysFile     = "apikeys.json"
 	insertBatchSize = 500
 )
 

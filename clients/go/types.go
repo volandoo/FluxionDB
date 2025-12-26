@@ -27,12 +27,20 @@ type ManageAPIKeyParams struct {
 	Scope  ApiKeyScope `json:"scope,omitempty"`
 }
 
+// APIKeyInfo describes a stored API key entry
+type APIKeyInfo struct {
+	Key       string `json:"key"`
+	Scope     string `json:"scope"`
+	Deletable bool   `json:"deletable"`
+}
+
 // ManageAPIKeyResponse represents the response for API key management
 type ManageAPIKeyResponse struct {
-	ID     string `json:"id"`
-	Status string `json:"status,omitempty"`
-	Error  string `json:"error,omitempty"`
-	Scope  string `json:"scope,omitempty"`
+	ID     string       `json:"id"`
+	Status string       `json:"status,omitempty"`
+	Error  string       `json:"error,omitempty"`
+	Scope  string       `json:"scope,omitempty"`
+	Keys   []APIKeyInfo `json:"keys,omitempty"`
 }
 
 // InsertMessageResponse represents the response to an insert message
