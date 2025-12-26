@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO="${REPO:-volandoo/FluxionDB}"
 TAG_PREFIX="${TAG_PREFIX:-cli-v}"
+CLI_VERSION="${CLI_VERSION:-0.2.0}"
 BINARY_BASE_NAME="fluxiondb"
-API_URL="https://api.github.com/repos/volandoo/FluxionDB/releases?per_page=25"
+TAG_NAME="${TAG_PREFIX}${CLI_VERSION}"
+DOWNLOAD_BASE="https://github.com/${REPO}/releases/download/${TAG_NAME}"
 WORKDIR=""
 
 cleanup() {
@@ -43,42 +46,6 @@ detect_arch() {
     esac
 }
 
-fetch_asset_url() {
-    local asset_name="$1"
-    local response
-    response="$(curl -fsSL "${API_URL}")" || return 1
-    RELEASES_JSON="${response}" node - "$TAG_PREFIX" "$asset_name" <<'NODE' || return 1
-const prefix = process.argv[2];
-const assetName = process.argv[3];
-
-let releases = [];
-try {
-    const payload = process.env.RELEASES_JSON || "[]";
-    releases = JSON.parse(payload);
-} catch (err) {
-    process.stderr.write(`Failed to parse releases JSON: ${err.message}\n`);
-    process.exit(1);
-}
-
-for (const release of releases) {
-    const tag = release.tag_name || "";
-    if (!tag.startsWith(prefix)) continue;
-    if (release.draft || release.prerelease) continue;
-    for (const asset of release.assets || []) {
-        if (asset.name === assetName && asset.browser_download_url) {
-            process.stdout.write(asset.browser_download_url + "\n");
-            process.exit(0);
-        }
-    }
-}
-
-process.stderr.write(
-    `Could not find asset named ${assetName} under releases prefixed with ${prefix}\n`,
-);
-process.exit(1);
-NODE
-}
-
 ensure_dir() {
     local dir="$1"
     if [ -d "${dir}" ]; then
@@ -107,7 +74,6 @@ copy_with_privilege() {
 
 main() {
     require_cmd curl
-    require_cmd node
     if ! command -v mktemp >/dev/null 2>&1; then
         error "mktemp is required"
     fi
@@ -133,8 +99,7 @@ main() {
     fi
 
     local asset_name="fluxiondb-${PLATFORM}-${ARCH}.${ARCHIVE_EXT}"
-    local download_url
-    download_url="$(fetch_asset_url "$asset_name")" || error "failed to locate release asset"
+    local download_url="${DOWNLOAD_BASE}/${asset_name}"
 
     WORKDIR="$(mktemp -d)"
     local archive_path="${WORKDIR}/${asset_name}"
