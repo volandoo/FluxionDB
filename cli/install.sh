@@ -45,12 +45,20 @@ detect_arch() {
 
 fetch_asset_url() {
     local asset_name="$1"
-    curl -fsSL "${API_URL}" | node - "$TAG_PREFIX" "$asset_name" <<'NODE' || return 1
-const fs = require("fs");
-
+    local response
+    response="$(curl -fsSL "${API_URL}")" || return 1
+    RELEASES_JSON="${response}" node - "$TAG_PREFIX" "$asset_name" <<'NODE' || return 1
 const prefix = process.argv[2];
 const assetName = process.argv[3];
-const releases = JSON.parse(fs.readFileSync(0, "utf8"));
+
+let releases = [];
+try {
+    const payload = process.env.RELEASES_JSON || "[]";
+    releases = JSON.parse(payload);
+} catch (err) {
+    process.stderr.write(`Failed to parse releases JSON: ${err.message}\n`);
+    process.exit(1);
+}
 
 for (const release of releases) {
     const tag = release.tag_name || "";
