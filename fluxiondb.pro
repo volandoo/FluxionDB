@@ -1,5 +1,5 @@
 QT -= gui
-QT += core websockets
+QT += core websockets sql
 
 CONFIG += c++17 console
 CONFIG -= app_bundle
@@ -18,7 +18,8 @@ SOURCES += \
     src/keyvalue.cpp \
     src/deleterecord.cpp \
     src/deletemultiplerecords.cpp \
-    src/deleterecordsrange.cpp
+    src/deleterecordsrange.cpp \
+    src/sqlitestorage.cpp
 
 HEADERS += \
     src/insertrequest.h \
@@ -36,4 +37,4 @@ HEADERS += \
     src/deleterecord.h \
     src/deletemultiplerecords.h \
     src/deleterecordsrange.h \
-    src/json/json.hpp
+    src/sqlitestorage.h

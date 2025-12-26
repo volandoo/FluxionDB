@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
--   `src/`: Qt Core/WebSocket C++17 server. Key modules: `websocket.*` (connection handling), `collection.*` (in-memory storage and persistence), `keyvalue.*` (key-value API), and `json/json.hpp` (nlohmann JSON header).
+-   `src/`: Qt Core/WebSocket C++17 server. Key modules: `websocket.*` (connection handling), `collection.*` (in-memory storage and persistence), and `keyvalue.*` (key-value API).
 -   `fluxiondb.pro` defines the Qt build configuration; `Makefile` exposes Docker workflows. Shared fixtures live under `tmp_data/`.
 -   `clients/node/`: TypeScript SDK compiled to `dist/`; integration helpers and tests live in `src/*.test.ts`.
 -   `clients/go/`: Go module with unit tests and the `example/` demo app.

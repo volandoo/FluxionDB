@@ -14,6 +14,7 @@
 
 #include "messagerequest.h"
 #include "collection.h"
+class SqliteStorage;
 
 namespace MessageType {
     inline const QString Auth = QStringLiteral("auth");
@@ -91,11 +92,10 @@ private:
 
     bool hasPermission(ApiKeyScope scope, RequiredPermission required) const;
     RequiredPermission permissionForType(const QString& type) const;
-    bool registerApiKey(const QString& key, ApiKeyScope scope, bool deletable, QString* errorMessage = nullptr);
+    bool registerApiKey(const QString& key, ApiKeyScope scope, bool deletable, QString* errorMessage = nullptr, bool persistToStorage = true);
     bool removeApiKey(const QString& key, QString* errorMessage = nullptr);
     bool parseScope(const QString& scopeString, ApiKeyScope* scopeOut) const;
     QString scopeToString(ApiKeyScope scope) const;
-    void saveApiKeysToDisk();
     void loadApiKeysFromDisk();
 
     struct ApiKeyEntry {
@@ -115,6 +115,7 @@ private:
     QString m_dataFolder;
 
     // In-memory databases
+    std::unique_ptr<SqliteStorage> m_storage;
     std::unordered_map<QString, std::unique_ptr<Collection>> m_databases;
     std::unordered_map<QString, ApiKeyScope> m_clientScopes;
     std::unordered_map<QString, ApiKeyEntry> m_apiKeys;

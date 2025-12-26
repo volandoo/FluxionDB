@@ -6,7 +6,6 @@
 #include <QJsonValue>
 #include <QJsonDocument>
 #include <QJsonParseError>
-#include <QDir>
 #include <QTime>
 #include <QElapsedTimer>
 #include <QUuid>
@@ -23,6 +22,7 @@
 #include "deleterecord.h"
 #include "deletemultiplerecords.h"
 #include "deleterecordsrange.h"
+#include "sqlitestorage.h"
 
 namespace {
 
@@ -111,22 +111,28 @@ WebSocket::WebSocket(const QString &masterKey, const QString &dataFolder, int fl
         qInfo() << "Running in non-persistent mode (no data folder specified)";
         return;
     }
+    m_storage = std::make_unique<SqliteStorage>();
+    if (!m_storage->initialize(m_dataFolder))
+    {
+        qFatal("Failed to initialize SQLite storage");
+    }
     qInfo() << "Running in persistent mode (data folder specified):" << m_dataFolder;
     qInfo() << "Flush interval set to" << flushIntervalSeconds << "seconds";
     m_flushTimer.start(flushIntervalSeconds * 1000);
     connect(&m_flushTimer, &QTimer::timeout, this, &WebSocket::flushToDisk);
 
-    // Load API keys from disk
+    // Load API keys from storage
     loadApiKeysFromDisk();
 
-    // get collections from data folder
-    QDir dir(m_dataFolder);
-    if (dir.exists())
+    // Load existing collections from SQLite
+    if (m_storage != nullptr)
     {
-        foreach (const QString &collection, dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+        const QStringList storedCollections = m_storage->collections();
+        for (const QString &collection : storedCollections)
         {
-            m_databases[collection] = std::make_unique<Collection>(collection, m_dataFolder);
-            m_databases[collection]->loadFromDisk();
+            auto col = std::make_unique<Collection>(collection, m_storage.get());
+            col->loadFromDisk();
+            m_databases[collection] = std::move(col);
         }
     }
 }
@@ -139,8 +145,8 @@ WebSocket::~WebSocket()
 
 void WebSocket::flushToDisk()
 {
-    if (m_dataFolder.isEmpty()) {
-        return; // Skip persistence if no data folder specified
+    if (m_storage == nullptr) {
+        return; // Skip persistence if no storage specified
     }
     
     for (auto &[key, value] : m_databases)
@@ -366,7 +372,7 @@ QString WebSocket::handleInsert(QWebSocket *client, const MessageRequest &messag
         auto database = m_databases[payload.col].get();
         if (database == nullptr)
         {
-            m_databases[payload.col] = std::make_unique<Collection>(payload.col, m_dataFolder);
+            m_databases[payload.col] = std::make_unique<Collection>(payload.col, m_storage.get());
             database = m_databases[payload.col].get();
         }
         database->insert(payload.ts, payload.doc, payload.data);
@@ -499,6 +505,10 @@ QString WebSocket::handleDeleteDocument(QWebSocket *client, const MessageRequest
         {            
             qInfo() << "Deleting collection (1) since there are no more documents:" << key;
             m_databases.erase(key);
+            if (m_storage != nullptr)
+            {
+                m_storage->deleteCollection(key);
+            }
         }
     }
     else
@@ -516,6 +526,10 @@ QString WebSocket::handleDeleteDocument(QWebSocket *client, const MessageRequest
         {
             qInfo() << "Deleting collection (2) since there are no more documents:" << query.col;
             m_databases.erase(query.col);
+            if (m_storage != nullptr)
+            {
+                m_storage->deleteCollection(query.col);
+            }
         }
     }
     return doc.toJson(QJsonDocument::Compact);
@@ -534,6 +548,10 @@ QString WebSocket::handleDeleteCollection(QWebSocket *client, const MessageReque
     if (m_databases.find(query.col) != m_databases.end())
     {
         m_databases.erase(query.col);
+    }
+    if (m_storage != nullptr)
+    {
+        m_storage->deleteCollection(query.col);
     }
 
     QJsonObject obj;
@@ -632,7 +650,7 @@ QString WebSocket::handleSetValue(QWebSocket *client, const MessageRequest &mess
     auto database = m_databases[collection].get();
     if (database == nullptr)
     {
-        m_databases[collection] = std::make_unique<Collection>(collection, m_dataFolder);
+        m_databases[collection] = std::make_unique<Collection>(collection, m_storage.get());
         database = m_databases[collection].get();
     }
     
@@ -968,7 +986,7 @@ WebSocket::RequiredPermission WebSocket::permissionForType(const QString &type) 
     return RequiredPermission::None;
 }
 
-bool WebSocket::registerApiKey(const QString &key, ApiKeyScope scope, bool deletable, QString *errorMessage)
+bool WebSocket::registerApiKey(const QString &key, ApiKeyScope scope, bool deletable, QString *errorMessage, bool persistToStorage)
 {
     if (key.isEmpty())
     {
@@ -1024,9 +1042,12 @@ bool WebSocket::registerApiKey(const QString &key, ApiKeyScope scope, bool delet
         }
     }
     
-    if (shouldPersist)
+    if (shouldPersist && m_storage != nullptr && persistToStorage)
     {
-        saveApiKeysToDisk();
+        if (!m_storage->upsertApiKey(key, scopeToString(scopeToStore), deletableToStore))
+        {
+            qWarning() << "Failed to persist API key to SQLite";
+        }
     }
     
     if (errorMessage)
@@ -1074,8 +1095,13 @@ bool WebSocket::removeApiKey(const QString &key, QString *errorMessage)
         }
     }
 
-    // Save to disk after removing the key
-    saveApiKeysToDisk();
+    if (m_storage != nullptr && key != m_masterKey)
+    {
+        if (!m_storage->deleteApiKey(key))
+        {
+            qWarning() << "Failed to delete API key from SQLite";
+        }
+    }
 
     if (errorMessage)
     {
@@ -1084,97 +1110,42 @@ bool WebSocket::removeApiKey(const QString &key, QString *errorMessage)
     return true;
 }
 
-void WebSocket::saveApiKeysToDisk()
+void WebSocket::loadApiKeysFromDisk()
 {
-    if (m_dataFolder.isEmpty()) {
-        return; // Skip persistence if no data folder specified
+    if (m_storage == nullptr)
+    {
+        qInfo() << "SQLite storage unavailable, API keys will not persist";
+        return;
     }
 
-    QDir dir;
-    dir.mkpath(m_dataFolder + "/config");
-
-    QJsonObject apiKeysObj;
-    for (const auto& [key, entry] : m_apiKeys)
+    const auto rows = m_storage->fetchApiKeys();
+    int loadedCount = 0;
+    for (const auto &row : rows)
     {
-        // Skip the master key - it should not be persisted
-        if (key == m_masterKey) {
+        ApiKeyScope scope;
+        if (!parseScope(row.scope, &scope))
+        {
+            qWarning() << "Invalid scope for persisted API key, skipping:" << row.key;
             continue;
         }
 
-        QJsonObject entryObj;
-        entryObj["scope"] = scopeToString(entry.scope);
-        entryObj["deletable"] = entry.deletable;
-        apiKeysObj[key] = entryObj;
-    }
-
-    QJsonDocument doc(apiKeysObj);
-    QFile file(m_dataFolder + "/config/api_keys.json");
-    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        file.write(doc.toJson(QJsonDocument::Indented));
-        file.close();
-        qDebug() << "API keys saved to disk:" << apiKeysObj.keys().size() << "keys";
-    } else {
-        qWarning() << "Failed to save API keys to disk";
-    }
-}
-
-void WebSocket::loadApiKeysFromDisk()
-{
-    if (m_dataFolder.isEmpty()) {
-        return; // Skip if no data folder specified
-    }
-
-    QFile file(m_dataFolder + "/config/api_keys.json");
-    if (!file.exists()) {
-        qInfo() << "No API keys file found, starting with clean state";
-        return;
-    }
-
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        qWarning() << "Failed to open API keys file";
-        return;
-    }
-
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &error);
-    file.close();
-
-    if (error.error != QJsonParseError::NoError) {
-        qWarning() << "Failed to parse API keys file:" << error.errorString();
-        return;
-    }
-
-    if (!doc.isObject()) {
-        qWarning() << "Invalid API keys file format";
-        return;
-    }
-
-    QJsonObject apiKeysObj = doc.object();
-    int loadedCount = 0;
-
-    for (auto it = apiKeysObj.begin(); it != apiKeysObj.end(); ++it)
-    {
-        QString key = it.key();
-        QJsonObject entryObj = it.value().toObject();
-
-        QString scopeString = entryObj["scope"].toString();
-        bool deletable = entryObj["deletable"].toBool();
-
-        ApiKeyScope scope;
-        if (!parseScope(scopeString, &scope)) {
-            qWarning() << "Invalid scope for API key, skipping:" << key;
-            continue;
+        if (row.key == m_masterKey)
+        {
+            // Ensure master key always registered with full scope regardless of stored value
+            scope = ApiKeyScope::ReadWriteDelete;
         }
 
         QString errorMessage;
-        if (registerApiKey(key, scope, deletable, &errorMessage)) {
-            loadedCount++;
-        } else {
-            qWarning() << "Failed to load API key:" << key << errorMessage;
+        if (registerApiKey(row.key, scope, row.deletable, &errorMessage, false))
+        {
+            ++loadedCount;
+        }
+        else
+        {
+            qWarning() << "Failed to load API key:" << row.key << errorMessage;
         }
     }
-
-    qInfo() << "Loaded" << loadedCount << "API keys from disk";
+    qInfo() << "Loaded" << loadedCount << "API keys from SQLite";
 }
 
 bool WebSocket::parseScope(const QString &scopeString, ApiKeyScope *scopeOut) const

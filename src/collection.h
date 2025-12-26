@@ -4,14 +4,17 @@
 #include <QString>
 #include <QHash>
 #include <QRegularExpression>
+#include <QMutex>
 #include <vector>
 #include <unordered_map>
 #include <memory>
 #include "datarecord.h"
 
+class SqliteStorage;
+
 class Collection {
 public:
-    explicit Collection(const QString& name, const QString& dataFolder);
+    explicit Collection(const QString& name, SqliteStorage* storage);
     ~Collection();
 
     void insert(qint64 timestamp, const QString& key, const QString& data);
@@ -38,16 +41,16 @@ public:
     }
 
 private:
-    void insert(qint64 timestamp, const QString& key, const QString& data, bool isNew);
+    void insertInternal(qint64 timestamp, const QString& key, const QString& data, bool persistToStorage);
     int getLatestRecordIndex(const std::vector<std::unique_ptr<DataRecord>>& records, qint64 timestamp);
     int getEarliestRecordIndex(const std::vector<std::unique_ptr<DataRecord>>& records, qint64 timestamp);
     
     QString m_name;
     std::unordered_map<QString, std::vector<std::unique_ptr<DataRecord>>> m_data;
     std::unordered_map<QString, std::string> m_key_vaue;
-    qint64 m_key_vaue_updated;
-    qint64 m_flushed;
-    QString m_dataFolder;
+    SqliteStorage* m_storage;
+    bool m_hasNewRecords;
+    QMutex m_flushMutex;
 };
 
 #endif // COLLECTION_H 

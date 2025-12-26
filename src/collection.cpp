@@ -1,63 +1,56 @@
 #include "collection.h"
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QDir>
-#include <QFile>
 #include <QDebug>
+#include <QMutexLocker>
 #include <algorithm>
 #include <iterator>
 #include <utility>
-
-#include "json/json.hpp"
+#include "sqlitestorage.h"
 
 #ifdef __linux__ 
 #include <malloc.h>
 #endif
 
-using json = nlohmann::json_abi_v3_11_3::json;
-
-Collection::Collection(const QString &name, const QString &dataFolder)
+Collection::Collection(const QString &name, SqliteStorage *storage)
 {
     m_name = name;
-    m_dataFolder = dataFolder;
-    m_key_vaue_updated = 0;
-    m_flushed = 0;
+    m_storage = storage;
+    m_hasNewRecords = false;
 }
 
 Collection::~Collection() {
+    flushToDisk();
     m_data.clear();
     m_data.rehash(0);
 #ifdef __linux__
     malloc_trim(0);
 #endif
-    if (!m_dataFolder.isEmpty()) {
-        QDir dir(m_dataFolder + "/" + m_name);
-        if (dir.exists()) {
-            dir.removeRecursively();
-        }
-    }
     qInfo() << "Collection deleted from memory" << m_name;    
 }
 
 void Collection::insert(qint64 timestamp, const QString &key, const QString &data)
 {
-    insert(timestamp, key, data, true);
+    const bool shouldPersist = (m_storage != nullptr);
+    insertInternal(timestamp, key, data, shouldPersist);
 }
 
-void Collection::insert(qint64 timestamp, const QString &key, const QString &data, bool isNew)
+void Collection::insertInternal(qint64 timestamp, const QString &key, const QString &data, bool persistToStorage)
 {
     // Create new record
     auto record = std::make_unique<DataRecord>();
     record->timestamp = timestamp;
     record->data = data.toStdString();
-    record->isNew = isNew;
+    record->isNew = persistToStorage;
+    const bool shouldMarkNew = record->isNew;
 
     // Get or create vector for this key
     auto it = m_data.find(key);
     if (it == m_data.end())
     {
         std::vector<std::unique_ptr<DataRecord>> newVector;
+        if (shouldMarkNew)
+        {
+            m_hasNewRecords = true;
+        }
         newVector.push_back(std::move(record));
         m_data.emplace(key, std::move(newVector));
         return;
@@ -85,6 +78,11 @@ void Collection::insert(qint64 timestamp, const QString &key, const QString &dat
     else
     {
         records.insert(vecIt, std::move(record)); // Insert at the correct position
+    }
+
+    if (shouldMarkNew)
+    {
+        m_hasNewRecords = true;
     }
 }
 
@@ -249,15 +247,12 @@ void Collection::clearDocument(const QString &key)
 #ifdef __linux__
         malloc_trim(0);
 #endif
-        // delete from disc if persistence is enabled
-        if (!m_dataFolder.isEmpty()) {
-            QDir dir(m_dataFolder + "/" + m_name + "/" + key);
-            if (dir.exists()) {
-                dir.removeRecursively();
-            }
-        }
-
         qInfo() << "Document deleted from memory" << m_name << ":" << key;
+    }
+
+    if (m_storage != nullptr)
+    {
+        m_storage->deleteDocument(m_name, key);
     }
 }
 
@@ -284,6 +279,10 @@ void Collection::deleteRecord(const QString &key, qint64 ts)
 #ifdef __linux__
         malloc_trim(0);
 #endif
+        if (m_storage != nullptr)
+        {
+            m_storage->deleteRecord(m_name, key, ts);
+        }
         return;
     }    
 
@@ -298,6 +297,10 @@ void Collection::deleteRecord(const QString &key, qint64 ts)
 #ifdef __linux__
         malloc_trim(0);
 #endif
+    }
+    if (m_storage != nullptr)
+    {
+        m_storage->deleteRecord(m_name, key, ts);
     }
 }
 
@@ -328,7 +331,6 @@ void Collection::deleteRecordsInRange(const QString &key, qint64 fromTs, qint64 
     }
     
     records.erase(beginIt, endIt);
-    
     if (records.empty()) {
         std::vector<std::unique_ptr<DataRecord>>{}.swap(records);
         m_data.erase(it);
@@ -336,6 +338,10 @@ void Collection::deleteRecordsInRange(const QString &key, qint64 fromTs, qint64 
 #ifdef __linux__
         malloc_trim(0);
 #endif
+        if (m_storage != nullptr)
+        {
+            m_storage->deleteRecordsInRange(m_name, key, fromTs, toTs);
+        }
         return;
     }
     
@@ -350,6 +356,10 @@ void Collection::deleteRecordsInRange(const QString &key, qint64 fromTs, qint64 
 #ifdef __linux__
         malloc_trim(0);
 #endif
+    }
+    if (m_storage != nullptr)
+    {
+        m_storage->deleteRecordsInRange(m_name, key, fromTs, toTs);
     }
 }
 
@@ -407,7 +417,10 @@ int Collection::getEarliestRecordIndex(const std::vector<std::unique_ptr<DataRec
 void Collection::setValueForKey(const QString &key, const QString &value)
 {
     m_key_vaue[key] = value.toStdString();
-    m_key_vaue_updated = QDateTime::currentMSecsSinceEpoch();
+    if (m_storage != nullptr)
+    {
+        m_storage->upsertKeyValue(m_name, key, value);
+    }
 }
 
 QString Collection::getValueForKey(const QString &key)
@@ -427,7 +440,10 @@ void Collection::removeValueForKey(const QString &key)
 #ifdef __linux__
     malloc_trim(0);
 #endif
-    m_key_vaue_updated = QDateTime::currentMSecsSinceEpoch();
+    if (m_storage != nullptr)
+    {
+        m_storage->removeKeyValue(m_name, key);
+    }
 }
 
 QHash<QString, QString> Collection::getAllValues(const QRegularExpression *keyRegex)
@@ -457,103 +473,103 @@ QList<QString> Collection::getAllKeys()
 
 void Collection::flushToDisk()
 {
-    if (m_dataFolder.isEmpty()) {
-        return; // Skip if persistence is disabled
-    }
-    
-    qDebug() << "Flushing collection to disk" << m_name;
-    // fluxiondb data
-    QDir dir;
-    dir.mkpath(m_dataFolder + "/" + m_name);
-    for(auto & each : m_data) {
-        auto key = each.first;
-        auto &records = each.second;
+    QMutexLocker locker(&m_flushMutex);
 
-        auto arr = json::array();
-        for(auto & record : records) {
-            if (!record->isNew) {
+    if (m_storage == nullptr) {
+        return;
+    }
+
+    if (!m_hasNewRecords)
+    {
+        return;
+    }
+
+    const bool startedTransaction = m_storage->beginTransaction();
+    if (!startedTransaction)
+    {
+        qWarning() << "Failed to start transaction for flushing collection" << m_name;
+        return;
+    }
+    bool keepFlushing = false;
+    int count = 0;
+    for (auto &[doc, records] : m_data)
+    {
+        for (auto &record : records)
+        {
+            if (!record->isNew)
+            {
                 continue;
             }
-            auto obj = json::object();
-            obj["ts"] = record->timestamp;
-            obj["data"] = record->data;
-            arr.push_back(obj);
-            record->isNew = false;
+            if (m_storage->upsertRecord(m_name, doc, record->timestamp, QString::fromStdString(record->data)))
+            {
+                record->isNew = false;
+                count++;
+            }
+            else
+            {
+                qWarning() << "Failed to upsert record for collection" << m_name << "doc" << doc << "timestamp" << record->timestamp;
+                keepFlushing = true;
+            }
         }
-        if (arr.empty()) {
-            continue;
-        }
-        dir.mkpath(m_dataFolder + "/" + m_name + "/" + key);
-        auto now = QString::number(QDateTime::currentMSecsSinceEpoch());
-        QFile file(m_dataFolder + "/" + m_name + "/" + key + "/"+ now + ".json");
-        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            file.write(json(arr).dump().c_str());
-            file.close();
+    }
+    if (!keepFlushing)
+    {
+        m_hasNewRecords = false;
+    }
+    else
+    {
+        m_hasNewRecords = false;
+        for (const auto &[doc, records] : m_data)
+        {
+            for (const auto &record : records)
+            {
+                if (record->isNew)
+                {
+                    m_hasNewRecords = true;
+                    break;
+                }
+            }
+            if (m_hasNewRecords)
+            {
+                break;
+            }
         }
     }
 
-    // if no key value update, skip next code:
-    if (m_key_vaue_updated > m_flushed) {    
-        // store key_value in data folder
-        QFile file(m_dataFolder + "/" + m_name + "/key_value.json");
-        qDebug() << "Flushing key_value to disk" << m_dataFolder + "/" + m_name + "/key_value.json";
-        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            std::unordered_map<std::string, std::string> kv;
-            for(auto &[key, value] : m_key_vaue) {
-                kv[key.toStdString()] = value;
-            }
-            file.write(json(kv).dump().c_str());
-            file.close();
+    if (startedTransaction)
+    {
+        if (!m_storage->commitTransaction())
+        {
+            m_storage->rollbackTransaction();
         }
-        qDebug() << "Done flushing collection to disk" << m_name;
     }
-    m_flushed = QDateTime::currentMSecsSinceEpoch();
+    qInfo() << "Flushed" << count << "new records to SQLite for collection" << m_name;
 }
 
 void Collection::loadFromDisk()
 {
-    if (m_dataFolder.isEmpty()) {
-        return; // Skip if persistence is disabled
-    }
-    
-    qDebug() << "Loading collection from disk" << m_name;
-    QDir dir(m_dataFolder + "/" + m_name);
-    if (!dir.exists()) {
-        qDebug() << "Collection does not exist" << m_name;
+    if (m_storage == nullptr)
+    {
         return;
     }
-    for (const QFileInfo &info : dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        auto key = info.fileName();
-        QDir dir(m_dataFolder + "/" + m_name + "/" + key);
-        if (!dir.exists()) {
-            qDebug() << "Collection does not exist" << m_name << key;
-            continue;
-        }
-        for (const QFileInfo &info : dir.entryInfoList(QDir::Files | QDir::NoDotAndDotDot, QDir::Time | QDir::Reversed)) {
-            auto fileName = info.fileName();
-            QFile file(m_dataFolder + "/" + m_name + "/" + key + "/" + fileName);
-            if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-                qDebug() << "Failed to open file" << fileName;
-                continue;
-            }
-            auto data = file.readAll();
-            auto arr = json::parse(data.toStdString());
-            for(auto & record : arr) {
-                std::string data = record["data"];
-                qint64 ts = record["ts"];
-                insert(ts, key, QString(data.c_str()), false);
-            }
-            file.close();
-        }
+
+    qDebug() << "Loading collection from SQLite" << m_name;
+    m_data.clear();
+    m_data.rehash(0);
+    m_key_vaue.clear();
+    m_key_vaue.rehash(0);
+    m_hasNewRecords = false;
+
+    const auto records = m_storage->fetchRecords(m_name);
+    for (const auto &record : records)
+    {
+        insertInternal(record.timestamp, record.document, record.data, false);
     }
-    QFile file(m_dataFolder + "/" + m_name + "/key_value.json");
-    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        auto data = file.readAll();
-        auto kv = json::parse(data.toStdString());
-        for(auto &[key, value] : kv.items()) {
-            m_key_vaue[QString(key.c_str())] = value;
-        }
-        file.close();
-    }    
-    qDebug() << "Done loading collection from disk" << m_name;
+
+    const auto keyValues = m_storage->fetchKeyValues(m_name);
+    for (const auto &kv : keyValues)
+    {
+        m_key_vaue[kv.key] = kv.value.toStdString();
+    }
+    qDebug() << "Done loading collection from SQLite" << m_name;
 }
