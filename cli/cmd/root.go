@@ -17,16 +17,18 @@ type cliConfig struct {
 }
 
 var (
-	cfg     cliConfig
-	rootCmd = &cobra.Command{
+	cfg           cliConfig
+	defaultURL    = os.Getenv("FLUXIONDB_URL")
+	defaultAPIKey = os.Getenv("FLUXIONDB_APIKEY")
+	rootCmd       = &cobra.Command{
 		Use:   "fluxiondb",
 		Short: "CLI for interacting with FluxionDB over WebSockets",
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if cfg.url == "" {
-				return fmt.Errorf("missing required --url")
+				return fmt.Errorf("missing required --url or FLUXIONDB_URL")
 			}
 			if cfg.apiKey == "" {
-				return fmt.Errorf("missing required --apikey")
+				return fmt.Errorf("missing required --apikey or FLUXIONDB_APIKEY")
 			}
 			return nil
 		},
@@ -39,11 +41,9 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&cfg.url, "url", "", "FluxionDB WebSocket URL (e.g. wss://localhost:8080)")
-	rootCmd.PersistentFlags().StringVar(&cfg.apiKey, "apikey", "", "API key for authentication")
+	rootCmd.PersistentFlags().StringVar(&cfg.url, "url", defaultURL, "FluxionDB WebSocket URL (env: FLUXIONDB_URL)")
+	rootCmd.PersistentFlags().StringVar(&cfg.apiKey, "apikey", defaultAPIKey, "API key for authentication (env: FLUXIONDB_APIKEY)")
 	rootCmd.PersistentFlags().StringVar(&cfg.connectionName, "name", "", "Optional connection name for observability")
-	rootCmd.MarkPersistentFlagRequired("url")
-	rootCmd.MarkPersistentFlagRequired("apikey")
 }
 
 // withClient connects using shared flags and invokes fn. The connection is
