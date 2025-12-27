@@ -8,9 +8,6 @@ RUN apt-get update && apt-get install -y \
     libqt6websockets6-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Download the latest released FluxionDB CLI into a temp dir we can copy from later.
-RUN chmod +x cli/install.sh \
-    && INSTALL_DIR=/tmp/fluxiondb-cli ./cli/install.sh
 
     # Create working directory
 WORKDIR /app
@@ -18,7 +15,11 @@ WORKDIR /app
 # Copy the project files
 COPY . .
 
-# Build the project
+# Download the latest released FluxionDB CLI into a temp dir we can copy from later.
+RUN chmod +x cli/install.sh \
+    && INSTALL_DIR=/tmp/fluxiondb-cli ./cli/install.sh
+
+    # Build the project
 RUN mkdir -p build && cd build \
     && qmake6 --version \
     && qmake6 ../fluxiondb.pro CONFIG+=release \
