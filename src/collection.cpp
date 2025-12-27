@@ -1,5 +1,6 @@
 #include "collection.h"
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QMutexLocker>
 #include <algorithm>
 #include <iterator>
@@ -473,6 +474,9 @@ QList<QString> Collection::getAllKeys()
 
 void Collection::flushToDisk()
 {
+    QElapsedTimer timer;
+    timer.start();
+
     QMutexLocker locker(&m_flushMutex);
 
     if (m_storage == nullptr) {
@@ -543,7 +547,8 @@ void Collection::flushToDisk()
             m_storage->rollbackTransaction();
         }
     }
-    qInfo() << "Flushed" << count << "new records to SQLite for collection" << m_name;
+    const qint64 elapsedNs = timer.nsecsElapsed();
+    qInfo() << "Flushed" << count << "new records to SQLite for collection" << m_name << "in" << elapsedNs << "ns";
 }
 
 void Collection::loadFromDisk()
