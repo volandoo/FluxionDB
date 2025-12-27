@@ -44,9 +44,12 @@ WORKDIR /app
 # Copy in only the server, sqlite3 CLI, and FluxionDB CLI artifacts.
 COPY --from=builder /src/build/fluxiondb /usr/local/bin/_database
 COPY --from=builder /usr/bin/sqlite3 /usr/local/bin/sqlite3
-COPY --from=builder /tmp/fluxiondb-cli/fluxiondb /usr/local/bin/fluxiondb-cli.bin
+COPY --from=builder /tmp/fluxiondb-cli/fluxiondb /usr/local/bin/fluxiondb
+COPY docker-entrypoint.sh /usr/local/bin/fluxiondb-entrypoint
+
+RUN chmod +x /usr/local/bin/fluxiondb-entrypoint
 
 EXPOSE 8080
 
-# Run the server binary by default; pass runtime args like --secret-key via `docker run`.
-ENTRYPOINT [ "/usr/local/bin/_database" ]
+# Run the server through a small shim that can export FLUXIONDB_APIKEY from --secret-key.
+ENTRYPOINT [ "/usr/local/bin/fluxiondb-entrypoint" ]
