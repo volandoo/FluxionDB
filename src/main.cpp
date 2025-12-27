@@ -20,6 +20,7 @@ void logException(const QString& message) {
 
 int main(int argc, char *argv[])
 {
+    
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName("start");
     QCoreApplication::setApplicationVersion("1.0");
