@@ -16,9 +16,57 @@ Official Java client for FluxionDB, an in-memory time series database with optio
 - **Java 11 or higher**
 - No third-party dependencies
 
-## Quick Start
+## Installation
 
-### Build from Source
+### Option 1: Maven (via JitPack)
+
+Add JitPack repository and dependency to your `pom.xml`:
+
+```xml
+<repositories>
+    <repository>
+        <id>jitpack.io</id>
+        <url>https://jitpack.io</url>
+    </repository>
+</repositories>
+
+<dependencies>
+    <dependency>
+        <groupId>com.github.volandoo</groupId>
+        <artifactId>fluxiondb</artifactId>
+        <version>main-SNAPSHOT</version>
+        <classifier>java-client</classifier>
+    </dependency>
+</dependencies>
+```
+
+Replace `main-SNAPSHOT` with a specific release tag (e.g., `v1.0.0`) for stable versions.
+
+### Option 2: Gradle (via JitPack)
+
+Add to your `build.gradle`:
+
+```gradle
+repositories {
+    maven { url 'https://jitpack.io' }
+}
+
+dependencies {
+    implementation 'com.github.volandoo:fluxiondb:main-SNAPSHOT:java-client'
+}
+```
+
+### Option 3: Direct JAR Download
+
+1. Download `fluxiondb-client.jar` from [GitHub Releases](https://github.com/volandoo/fluxiondb/releases)
+2. Add to your project classpath:
+
+```bash
+javac -cp fluxiondb-client.jar YourApp.java
+java -cp fluxiondb-client.jar:. YourApp
+```
+
+### Option 4: Build from Source
 
 ```bash
 cd clients/java

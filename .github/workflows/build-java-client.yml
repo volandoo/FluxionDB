@@ -1,0 +1,41 @@
+name: Build Java Client
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up JDK 11
+      uses: actions/setup-java@v3
+      with:
+        java-version: '11'
+        distribution: 'temurin'
+
+    - name: Build Java Client
+      run: |
+        cd clients/java
+        chmod +x build.sh
+        ./build.sh
+
+    - name: Upload JAR as artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: fluxiondb-client
+        path: clients/java/fluxiondb-client.jar
+
+    - name: Create Release (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: clients/java/fluxiondb-client.jar
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

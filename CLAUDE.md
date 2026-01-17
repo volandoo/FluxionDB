@@ -7,9 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 FluxionDB is an in-memory time series database with optional disk persistence, exposed over WebSockets. The architecture consists of:
 
 - **Server** (`src/`): Qt/C++17 WebSocket server with in-memory storage backed by SQLite persistence
-- **Clients**: Official SDKs in Node.js (`clients/node/`), Go (`clients/go/`), and Python (`clients/python/`)
+- **Clients**: Official SDKs in Node.js (`clients/node/`), Go (`clients/go/`), Python (`clients/python/`), and Java (`clients/java/`)
 - **CLI** (`cli/`): Go-based command-line client for operations and data import/export
-- **Dashboard** (`dashboard/`): SvelteKit-based web UI
 
 ## Development Commands
 
@@ -51,6 +50,15 @@ pip install -e .
 pytest
 ```
 
+### Java Client
+
+```sh
+cd clients/java
+./build.sh              # Creates fluxiondb-client.jar
+javac -cp fluxiondb-client.jar -d build/classes TestClient.java
+java -cp fluxiondb-client.jar:build/classes TestClient
+```
+
 ### CLI Tool
 
 ```sh
@@ -60,15 +68,6 @@ go build -o fluxiondb ./...
 
 # Or run directly
 go run . fetch-collections --url ws://localhost:8080 --apikey YOUR_KEY
-```
-
-### Dashboard (SvelteKit)
-
-```sh
-cd dashboard
-npm install
-npm run dev         # Development server
-npm run build       # Production build
 ```
 
 ## Server Architecture
