@@ -1,6 +1,6 @@
 # FluxionDB
 
-FluxionDB is an in-memory time series database exposed over WebSockets. The server keeps hot data in RAM, can optionally persist to disk, and speaks a compact protocol that is shared by the official Node.js and Go client SDKs shipped in this repository.
+FluxionDB is an in-memory time series database exposed over WebSockets. The server keeps hot data in RAM, can optionally persist to disk, and speaks a compact protocol that is shared by the official Node.js, Go, Python, and Java client SDKs shipped in this repository.
 
 ## Highlights
 
@@ -11,6 +11,7 @@ FluxionDB is an in-memory time series database exposed over WebSockets. The serv
     -   Node.js SDK (`clients/node`) published as `@volandoo/fluxiondb-client`
     -   Go SDK (`clients/go`) with examples and docs
     -   Python SDK (`clients/python`) distributed via `pip`
+    -   Java SDK (`clients/java`) zero-dependency, Java 11+
 -   Docker image (`volandoo/fluxiondb`) for single-command deployment
 
 ---
@@ -87,7 +88,7 @@ The built-in master key always has full access, cannot be removed, and is the on
 -   `read_write` – read and insert/update operations.
 -   `read_write_delete` – full access, including destructive operations.
 
-Both clients handle the JSON marshalling for you, as well as appending the API key to the connection URL.
+All clients handle the JSON marshalling for you, as well as appending the API key to the connection URL.
 
 ### Managing API Keys Manually
 
@@ -229,6 +230,74 @@ Omit the `Key` pointer when calling `client.GetValues` to return the entire coll
 
 ---
 
+## Java Client
+
+Build from source (requires Java 11+, no external dependencies):
+
+```sh
+cd clients/java
+./build.sh
+```
+
+Example:
+
+```java
+import com.volandoo.fluxiondb.*;
+import com.volandoo.fluxiondb.model.requests.*;
+import com.volandoo.fluxiondb.model.responses.*;
+
+FluxionDBClient client = new FluxionDBClientBuilder()
+    .url("ws://localhost:8080")
+    .apiKey("YOUR_SECRET_KEY")
+    .connectionName("java-client")
+    .build();
+
+client.connect().get();
+
+long now = System.currentTimeMillis() / 1000;
+client.insertSingleRecord(new InsertMessageRequest(
+    now,
+    "device-1",
+    "{\"temperature\":22.5}",
+    "sensors"
+)).get();
+
+FetchLatestRecordsParams params = FetchLatestRecordsParams.builder()
+    .col("sensors")
+    .ts(now)
+    .doc("/device-[12]/")
+    .build();
+
+Map<String, RecordResponse> latest = client.fetchLatestRecords(params).get();
+System.out.println(latest);
+
+GetValuesParams kvParams = new GetValuesParams("config", "/env\\..*/");
+Map<String, String> envVars = client.getValues(kvParams).get();
+System.out.println(envVars);
+
+List<ConnectionInfo> connections = client.getConnections().get();
+System.out.println(connections);
+
+client.closeAsync().get();
+```
+
+The Java client uses CompletableFuture for async operations and supports try-with-resources:
+
+```java
+try (FluxionDBClient client = new FluxionDBClientBuilder()
+        .url("ws://localhost:8080")
+        .apiKey("YOUR_SECRET_KEY")
+        .build()) {
+
+    client.connect().get();
+    // Use client...
+} // Auto-closes
+```
+
+See `clients/java/README.md` for installation and `clients/java/DOCUMENTATION.md` for the complete API reference.
+
+---
+
 ## Development
 
 -   `make build` – build the Docker image
@@ -237,6 +306,7 @@ Omit the `Key` pointer when calling `client.GetValues` to return the entire coll
 -   `cd clients/node && npm install && npm run build` – build Node client bundle
 -   `cd clients/go && go test ./...` – run Go client tests
 -   `cd clients/python && pip install -e . && pytest` – run Python client tests
+-   `cd clients/java && ./build.sh` – build Java client JAR (requires Java 11+)
 
 ### Repository Layout
 
@@ -244,6 +314,7 @@ Omit the `Key` pointer when calling `client.GetValues` to return the entire coll
 -   `clients/node/` – Node.js SDK (TypeScript)
 -   `clients/go/` – Go SDK
 -   `clients/python/` – Python SDK
+-   `clients/java/` – Java SDK (Java 11+, zero dependencies)
 -   `cli/` – cross-platform command-line client (see [CLI.md](CLI.md))
 
 ---
