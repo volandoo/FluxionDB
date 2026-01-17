@@ -232,14 +232,41 @@ Omit the `Key` pointer when calling `client.GetValues` to return the entire coll
 
 ## Java Client
 
-Build from source (requires Java 11+, no external dependencies):
+### Installation
 
-```sh
-cd clients/java
-./build.sh
+**Maven (via JitPack):**
+```xml
+<repositories>
+    <repository>
+        <id>jitpack.io</id>
+        <url>https://jitpack.io</url>
+    </repository>
+</repositories>
+
+<dependencies>
+    <dependency>
+        <groupId>com.github.volandoo</groupId>
+        <artifactId>fluxiondb</artifactId>
+        <version>main-SNAPSHOT</version>
+        <classifier>java-client</classifier>
+    </dependency>
+</dependencies>
 ```
 
-Example:
+**Gradle (via JitPack):**
+```gradle
+repositories {
+    maven { url 'https://jitpack.io' }
+}
+
+dependencies {
+    implementation 'com.github.volandoo:fluxiondb:main-SNAPSHOT:java-client'
+}
+```
+
+**Or download JAR from [GitHub Releases](https://github.com/volandoo/fluxiondb/releases)**
+
+### Example Usage
 
 ```java
 import com.volandoo.fluxiondb.*;
