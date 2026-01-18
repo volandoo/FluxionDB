@@ -504,6 +504,10 @@ void Collection::flushToDisk()
             {
                 continue;
             }
+            if (doc.isEmpty()) 
+            {
+                continue;
+            }
             if (m_storage->upsertRecord(m_name, doc, record->timestamp, QString::fromStdString(record->data)))
             {
                 record->isNew = false;
