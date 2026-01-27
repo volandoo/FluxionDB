@@ -25,6 +25,7 @@ import {
   RemoveApiKeyParams,
   ManageApiKeyParams,
 } from "./types";
+import TimeoutError from "./errors";
 
 // Lazy load WebSocket implementation
 
@@ -309,7 +310,18 @@ class Client {
     }
   }
 
-  private async send<T>(data: WebSocketMessage): Promise<T> {
+  private startTimeout(onTimeout: () => void, timeout?: number): () => void {
+    if (timeout === undefined) {
+      return () => {};
+    }
+    const timer = setTimeout(onTimeout, timeout);
+    return () => clearTimeout(timer);
+  }
+
+  private async send<T>(
+    data: WebSocketMessage,
+    timeout?: number,
+  ): Promise<T> {
     try {
       await this.connect();
     } catch (error) {
@@ -327,9 +339,41 @@ class Client {
     const messageId = this.generateId();
 
     return new Promise((resolve, reject) => {
-      this.inflightRequests[messageId] = (response: T) => {
+      let settled = false;
+      const clearTimer = this.startTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        delete this.inflightRequests[messageId];
+        reject(
+          new TimeoutError(
+            `Request ${messageId} timed out after ${timeout}ms`,
+          ),
+        );
+      }, timeout);
+
+      const resolveOnce = (response: T) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimer();
+        delete this.inflightRequests[messageId];
         resolve(response);
       };
+
+      const rejectOnce = (error: any) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimer();
+        delete this.inflightRequests[messageId];
+        reject(error);
+      };
+
+      this.inflightRequests[messageId] = resolveOnce;
       try {
         this.ws!.send(
           JSON.stringify({
@@ -339,9 +383,8 @@ class Client {
           }),
         );
       } catch (error) {
-        delete this.inflightRequests[messageId]; // Clean up if send fails
         console.error("Error sending message:", error);
-        reject(error);
+        rejectOnce(error);
       }
     });
   }
@@ -385,165 +428,251 @@ class Client {
     }, this.reconnectInterval);
   }
 
-  public async fetchCollections() {
-    const resp = await this.send<CollectionsResponse>({
-      type: MESSAGE_TYPES.QUERY_COLLECTIONS,
-      data: "{}",
-    });
+  public async fetchCollections(timeout?: number) {
+    const resp = await this.send<CollectionsResponse>(
+      {
+        type: MESSAGE_TYPES.QUERY_COLLECTIONS,
+        data: "{}",
+      },
+      timeout,
+    );
     return resp.collections;
   }
 
-  public async getConnections(): Promise<ConnectionInfo[]> {
-    const resp = await this.send<ConnectionsResponse>({
-      type: MESSAGE_TYPES.CONNECTIONS,
-      data: "{}",
-    });
+  public async getConnections(
+    timeout?: number,
+  ): Promise<ConnectionInfo[]> {
+    const resp = await this.send<ConnectionsResponse>(
+      {
+        type: MESSAGE_TYPES.CONNECTIONS,
+        data: "{}",
+      },
+      timeout,
+    );
     return resp.connections;
   }
 
-  public async deleteCollection(params: DeleteCollectionParams) {
-    await this.send<InsertMessageResponse>({
-      type: MESSAGE_TYPES.DELETE_COLLECTION,
-      data: JSON.stringify(params),
-    });
+  public async deleteCollection(
+    params: DeleteCollectionParams,
+    timeout?: number,
+  ) {
+    await this.send<InsertMessageResponse>(
+      {
+        type: MESSAGE_TYPES.DELETE_COLLECTION,
+        data: JSON.stringify(params),
+      },
+      timeout,
+    );
   }
 
   /**
    * Fetch the latest records for a given collection. If device_id is provided, fetch the latest records for that device_id only
    * if "from" is provided, fetch the records only starting from that timestamp and always up to the "ts" timestamp.
    */
-  public async fetchLatestRecords(params: FetchLatestRecordsParams) {
-    const resp = await this.send<QueryResponse>({
-      type: MESSAGE_TYPES.QUERY_RECORDS,
-      data: JSON.stringify({
-        col: params.col,
-        ts: params.ts,
-        doc: params.doc || "",
-        from: params.from || 0,
-      }),
-    });
+  public async fetchLatestRecords(
+    params: FetchLatestRecordsParams,
+    timeout?: number,
+  ) {
+    const resp = await this.send<QueryResponse>(
+      {
+        type: MESSAGE_TYPES.QUERY_RECORDS,
+        data: JSON.stringify({
+          col: params.col,
+          ts: params.ts,
+          doc: params.doc || "",
+          from: params.from || 0,
+        }),
+      },
+      timeout,
+    );
     return resp.records;
   }
 
-  public async insertMultipleRecords(items: InsertMessageRequest[]) {
-    return this.send({
-      data: JSON.stringify(items),
-      type: MESSAGE_TYPES.INSERT,
-    });
+  public async insertMultipleRecords(
+    items: InsertMessageRequest[],
+    timeout?: number,
+  ) {
+    return this.send(
+      {
+        data: JSON.stringify(items),
+        type: MESSAGE_TYPES.INSERT,
+      },
+      timeout,
+    );
   }
 
-  public async insertSingleRecord(items: InsertMessageRequest) {
-    return this.send({
-      data: JSON.stringify([items]),
-      type: MESSAGE_TYPES.INSERT,
-    });
+  public async insertSingleRecord(
+    items: InsertMessageRequest,
+    timeout?: number,
+  ) {
+    return this.send(
+      {
+        data: JSON.stringify([items]),
+        type: MESSAGE_TYPES.INSERT,
+      },
+      timeout,
+    );
   }
 
-  public async fetchDocument(params: FetchRecordsParams) {
-    const resp = await this.send<QueryCollectionResponse>({
-      type: MESSAGE_TYPES.QUERY_DOCUMENT,
-      data: JSON.stringify(params),
-    });
+  public async fetchDocument(
+    params: FetchRecordsParams,
+    timeout?: number,
+  ) {
+    const resp = await this.send<QueryCollectionResponse>(
+      {
+        type: MESSAGE_TYPES.QUERY_DOCUMENT,
+        data: JSON.stringify(params),
+      },
+      timeout,
+    );
     return resp.records;
   }
 
-  public async deleteDocument(params: DeleteDocumentParams) {
-    await this.send<InsertMessageResponse>({
-      type: MESSAGE_TYPES.DELETE_DOCUMENT,
-      data: JSON.stringify(params),
-    });
+  public async deleteDocument(
+    params: DeleteDocumentParams,
+    timeout?: number,
+  ) {
+    await this.send<InsertMessageResponse>(
+      {
+        type: MESSAGE_TYPES.DELETE_DOCUMENT,
+        data: JSON.stringify(params),
+      },
+      timeout,
+    );
   }
 
-  public async deleteRecord(params: DeleteRecord) {
-    await this.send<InsertMessageResponse>({
-      type: MESSAGE_TYPES.DELETE_RECORD,
-      data: JSON.stringify(params),
-    });
+  public async deleteRecord(params: DeleteRecord, timeout?: number) {
+    await this.send<InsertMessageResponse>(
+      {
+        type: MESSAGE_TYPES.DELETE_RECORD,
+        data: JSON.stringify(params),
+      },
+      timeout,
+    );
   }
 
-  public async deleteMultipleRecords(params: DeleteRecord[]) {
-    await this.send<InsertMessageResponse>({
-      type: MESSAGE_TYPES.DELETE_MULTIPLE_RECORDS,
-      data: JSON.stringify(params),
-    });
+  public async deleteMultipleRecords(
+    params: DeleteRecord[],
+    timeout?: number,
+  ) {
+    await this.send<InsertMessageResponse>(
+      {
+        type: MESSAGE_TYPES.DELETE_MULTIPLE_RECORDS,
+        data: JSON.stringify(params),
+      },
+      timeout,
+    );
   }
 
-  public async deleteRecordsRange(params: DeleteRecordsRange) {
-    await this.send<InsertMessageResponse>({
-      type: MESSAGE_TYPES.DELETE_RECORDS_RANGE,
-      data: JSON.stringify(params),
-    });
+  public async deleteRecordsRange(
+    params: DeleteRecordsRange,
+    timeout?: number,
+  ) {
+    await this.send<InsertMessageResponse>(
+      {
+        type: MESSAGE_TYPES.DELETE_RECORDS_RANGE,
+        data: JSON.stringify(params),
+      },
+      timeout,
+    );
   }
 
   // Key Value API
-  public async setValue(params: SetValueParams) {
-    await this.send<InsertMessageResponse>({
-      type: MESSAGE_TYPES.SET_VALUE,
-      data: JSON.stringify(params),
-    });
+  public async setValue(params: SetValueParams, timeout?: number) {
+    await this.send<InsertMessageResponse>(
+      {
+        type: MESSAGE_TYPES.SET_VALUE,
+        data: JSON.stringify(params),
+      },
+      timeout,
+    );
   }
 
-  public async getValue(params: GetValueParams) {
-    const resp = await this.send<KeyValueResponse>({
-      type: MESSAGE_TYPES.GET_VALUE,
-      data: JSON.stringify(params),
-    });
+  public async getValue(params: GetValueParams, timeout?: number) {
+    const resp = await this.send<KeyValueResponse>(
+      {
+        type: MESSAGE_TYPES.GET_VALUE,
+        data: JSON.stringify(params),
+      },
+      timeout,
+    );
     return resp.value;
   }
 
-  public async getKeys(params: CollectionParam) {
-    const resp = await this.send<KeyValueAllKeysResponse>({
-      type: MESSAGE_TYPES.GET_ALL_KEYS,
-      data: JSON.stringify(params),
-    });
+  public async getKeys(params: CollectionParam, timeout?: number) {
+    const resp = await this.send<KeyValueAllKeysResponse>(
+      {
+        type: MESSAGE_TYPES.GET_ALL_KEYS,
+        data: JSON.stringify(params),
+      },
+      timeout,
+    );
     return resp.keys;
   }
 
-  public async getValues(params: GetValuesParams) {
+  public async getValues(params: GetValuesParams, timeout?: number) {
     const type =
       params.key && params.key.length > 0
         ? MESSAGE_TYPES.GET_VALUES
         : MESSAGE_TYPES.GET_ALL_VALUES;
-    const resp = await this.send<KeyValueAllValuesResponse>({
-      type,
-      data: JSON.stringify(params),
-    });
+    const resp = await this.send<KeyValueAllValuesResponse>(
+      {
+        type,
+        data: JSON.stringify(params),
+      },
+      timeout,
+    );
     return resp.values;
   }
 
-  public async deleteValue(params: DeleteValueParams) {
-    await this.send<InsertMessageResponse>({
-      type: MESSAGE_TYPES.REMOVE_VALUE,
-      data: JSON.stringify(params),
-    });
+  public async deleteValue(params: DeleteValueParams, timeout?: number) {
+    await this.send<InsertMessageResponse>(
+      {
+        type: MESSAGE_TYPES.REMOVE_VALUE,
+        data: JSON.stringify(params),
+      },
+      timeout,
+    );
   }
 
   public async addApiKey(
     params: AddApiKeyParams,
+    timeout?: number,
   ): Promise<ManageApiKeyResponse> {
-    return this.manageApiKey({
-      action: "add",
-      key: params.key,
-      scope: params.scope,
-    });
+    return this.manageApiKey(
+      {
+        action: "add",
+        key: params.key,
+        scope: params.scope,
+      },
+      timeout,
+    );
   }
 
   public async removeApiKey(
     params: RemoveApiKeyParams,
+    timeout?: number,
   ): Promise<ManageApiKeyResponse> {
-    return this.manageApiKey({
-      action: "remove",
-      key: params.key,
-    });
+    return this.manageApiKey(
+      {
+        action: "remove",
+        key: params.key,
+      },
+      timeout,
+    );
   }
 
   private async manageApiKey(
     params: ManageApiKeyParams,
+    timeout?: number,
   ): Promise<ManageApiKeyResponse> {
-    return this.send<ManageApiKeyResponse>({
-      type: MESSAGE_TYPES.MANAGE_API_KEYS,
-      data: JSON.stringify(params),
-    });
+    return this.send<ManageApiKeyResponse>(
+      {
+        type: MESSAGE_TYPES.MANAGE_API_KEYS,
+        data: JSON.stringify(params),
+      },
+      timeout,
+    );
   }
 }
 
