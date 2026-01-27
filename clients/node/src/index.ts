@@ -27,3 +27,4 @@ export type {
   ApiKeyScope,
   ApiKeyEntry,
 } from "./types";
+export { TimeoutError } from "./errors";
