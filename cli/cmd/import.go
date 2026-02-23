@@ -110,16 +110,49 @@ func collectionsToImport(opts importOptions) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		var cols []string
+
+		// Discover collections recursively so names that include path separators
+		// (exported as nested directories) are still imported by --all.
+		dirs := []string{}
 		for _, entry := range entries {
-			if !entry.IsDir() {
+			if entry.IsDir() {
+				dirs = append(dirs, filepath.Join(opts.inDir, entry.Name()))
+			}
+		}
+
+		seen := map[string]struct{}{}
+		var cols []string
+		for len(dirs) > 0 {
+			dir := dirs[len(dirs)-1]
+			dirs = dirs[:len(dirs)-1]
+
+			dirEntries, err := os.ReadDir(dir)
+			if err != nil {
+				return nil, err
+			}
+			for _, entry := range dirEntries {
+				if entry.IsDir() {
+					dirs = append(dirs, filepath.Join(dir, entry.Name()))
+				}
+			}
+
+			if !isCollectionExportDir(dir) {
 				continue
 			}
-			colPath := filepath.Join(opts.inDir, entry.Name())
-			if !isCollectionExportDir(colPath) {
+
+			rel, err := filepath.Rel(opts.inDir, dir)
+			if err != nil {
+				return nil, err
+			}
+			rel = filepath.ToSlash(rel)
+			if rel == "." || rel == "" {
 				continue
 			}
-			cols = append(cols, entry.Name())
+			if _, ok := seen[rel]; ok {
+				continue
+			}
+			seen[rel] = struct{}{}
+			cols = append(cols, rel)
 		}
 		sort.Strings(cols)
 		return cols, nil
