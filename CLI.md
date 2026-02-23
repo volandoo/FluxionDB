@@ -39,4 +39,16 @@ fluxiondb fetch-collections --url wss://your-host:8080 --apikey YOUR_KEY
 
 See `cli/README.md` or `fluxiondb --help` for all commands and flags.
 
+### Legacy imports
+
+If your backup is from the old file-based layout (pre-SQLite), run import with `--legacy`.
+Expected shape:
+
+- `<in-dir>/<collection>/<document>/*.json`
+
+Each JSON file can be:
+
+- a single record object: `{"data":"...", "ts": 1771760179}`
+- or an array of record objects: `[{"data":"...", "ts": 1771760179}]`
+
 > **AI agents:** use `SKILLS.md` for the FluxionDB CLI skill definition (trigger metadata plus workflow notes). Point them there when automations need to build, run, or script against this binary.

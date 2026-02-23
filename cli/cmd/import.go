@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -19,6 +22,7 @@ type importOptions struct {
 	collection string
 	apiKeys    bool
 	all        bool
+	legacy     bool
 }
 
 var importOpts importOptions
@@ -69,6 +73,7 @@ func init() {
 	importCmd.Flags().StringVar(&importOpts.collection, "col", "", "Collection to import")
 	importCmd.Flags().BoolVar(&importOpts.apiKeys, "api-keys", false, "Import API keys from apikeys.json (master key required)")
 	importCmd.Flags().BoolVar(&importOpts.all, "all", false, "Import every collection and API keys from the directory")
+	importCmd.Flags().BoolVar(&importOpts.legacy, "legacy", false, "Import legacy layout: <in-dir>/<collection>/<document>/*.json")
 	importCmd.MarkFlagRequired("in-dir")
 }
 
@@ -82,7 +87,7 @@ func runImport(client *fluxiondb.Client, opts importOptions) (importResult, erro
 	}
 
 	for _, col := range collections {
-		summary, err := importCollection(client, col, opts.inDir)
+		summary, err := importCollection(client, col, opts.inDir, opts.legacy)
 		if err != nil {
 			return result, err
 		}
@@ -136,7 +141,7 @@ func collectionsToImport(opts importOptions) ([]string, error) {
 				}
 			}
 
-			if !isCollectionExportDir(dir) {
+			if !isCollectionImportDir(dir, opts.legacy) {
 				continue
 			}
 
@@ -239,7 +244,53 @@ func isCollectionExportDir(path string) bool {
 	return false
 }
 
-func importCollection(client *fluxiondb.Client, col, inDir string) (importSummary, error) {
+func isCollectionLegacyDir(path string) bool {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && hasLegacyJSONFileInDocumentDir(filepath.Join(path, entry.Name())) {
+			return true
+		}
+		if !entry.IsDir() && entry.Name() == keyValueFile {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLegacyJSONFileInDocumentDir(path string) bool {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+			return true
+		}
+	}
+	return false
+}
+
+func isCollectionImportDir(path string, legacy bool) bool {
+	if legacy {
+		return isCollectionLegacyDir(path)
+	}
+	return isCollectionExportDir(path)
+}
+
+func importCollection(client *fluxiondb.Client, col, inDir string, legacy bool) (importSummary, error) {
+	if legacy {
+		return importCollectionLegacy(client, col, inDir)
+	}
+	return importCollectionJSONL(client, col, inDir)
+}
+
+func importCollectionJSONL(client *fluxiondb.Client, col, inDir string) (importSummary, error) {
 	colDir := filepath.Join(inDir, col)
 	entries, err := os.ReadDir(colDir)
 	if err != nil {
@@ -297,6 +348,65 @@ func importCollection(client *fluxiondb.Client, col, inDir string) (importSummar
 	}, nil
 }
 
+func importCollectionLegacy(client *fluxiondb.Client, col, inDir string) (importSummary, error) {
+	colDir := filepath.Join(inDir, col)
+	entries, err := os.ReadDir(colDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return importSummary{}, fmt.Errorf("collection path %s not found", colDir)
+		}
+		return importSummary{}, err
+	}
+
+	type docFiles struct {
+		doc   string
+		files []string
+	}
+
+	docs := make([]docFiles, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		docName := entry.Name()
+		docDir := filepath.Join(colDir, entry.Name())
+		files, err := collectLegacyJSONFiles(docDir)
+		if err != nil {
+			return importSummary{}, err
+		}
+		if len(files) == 0 {
+			continue
+		}
+		docs = append(docs, docFiles{doc: docName, files: files})
+	}
+
+	sort.Slice(docs, func(i, j int) bool {
+		return docs[i].doc < docs[j].doc
+	})
+
+	totalRecords := 0
+	for _, doc := range docs {
+		count, err := importLegacyDocumentFiles(client, col, doc.doc, doc.files)
+		if err != nil {
+			return importSummary{}, err
+		}
+		totalRecords += count
+	}
+
+	keyValues, err := importKeyValues(client, col, colDir)
+	if err != nil {
+		return importSummary{}, err
+	}
+
+	return importSummary{
+		Collection: col,
+		Documents:  len(docs),
+		Records:    totalRecords,
+		KeyValues:  keyValues,
+		InputDir:   colDir,
+	}, nil
+}
+
 func importDocumentFile(client *fluxiondb.Client, col, doc, path string) (int, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -344,6 +454,200 @@ func importDocumentFile(client *fluxiondb.Client, col, doc, path string) (int, e
 	}
 
 	return total, nil
+}
+
+func collectLegacyJSONFiles(docDir string) ([]string, error) {
+	files := []string{}
+	err := filepath.WalkDir(docDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(d.Name()), ".json") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func importLegacyDocumentFiles(client *fluxiondb.Client, col, doc string, paths []string) (int, error) {
+	batch := make([]fluxiondb.InsertMessageRequest, 0, insertBatchSize)
+	total := 0
+
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if err := client.InsertMultipleRecords(batch); err != nil {
+			return err
+		}
+		total += len(batch)
+		batch = batch[:0]
+		return nil
+	}
+
+	for _, path := range paths {
+		records, err := parseLegacyRecords(path)
+		if err != nil {
+			return total, err
+		}
+		for _, rec := range records {
+			batch = append(batch, fluxiondb.InsertMessageRequest{
+				TS:   rec.TS,
+				Doc:  doc,
+				Data: rec.Data,
+				Col:  col,
+			})
+			if len(batch) == insertBatchSize {
+				if err := flush(); err != nil {
+					return total, err
+				}
+			}
+		}
+	}
+
+	if err := flush(); err != nil {
+		return total, err
+	}
+	return total, nil
+}
+
+func parseLegacyRecords(path string) ([]archiveRecord, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	trimmed := bytes.TrimSpace(content)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+
+	switch trimmed[0] {
+	case '[':
+		var items []map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &items); err != nil {
+			return nil, fmt.Errorf("decode %s: %w", path, err)
+		}
+
+		records := make([]archiveRecord, 0, len(items))
+		for i, item := range items {
+			rec, err := legacyRecordFromObject(item, path, i)
+			if err != nil {
+				return nil, err
+			}
+			records = append(records, rec)
+		}
+		return records, nil
+	case '{':
+		var item map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &item); err != nil {
+			return nil, fmt.Errorf("decode %s: %w", path, err)
+		}
+		rec, err := legacyRecordFromObject(item, path, -1)
+		if err != nil {
+			return nil, err
+		}
+		return []archiveRecord{rec}, nil
+	default:
+		return nil, fmt.Errorf("decode %s: expected JSON object or array", path)
+	}
+}
+
+func legacyRecordFromObject(item map[string]json.RawMessage, path string, index int) (archiveRecord, error) {
+	ts, err := extractLegacyTimestamp(item, path)
+	if err != nil {
+		if index >= 0 {
+			return archiveRecord{}, fmt.Errorf("%s[%d]: %w", path, index, err)
+		}
+		return archiveRecord{}, fmt.Errorf("%s: %w", path, err)
+	}
+
+	data, err := extractLegacyData(item)
+	if err != nil {
+		if index >= 0 {
+			return archiveRecord{}, fmt.Errorf("%s[%d]: %w", path, index, err)
+		}
+		return archiveRecord{}, fmt.Errorf("%s: %w", path, err)
+	}
+
+	return archiveRecord{TS: ts, Data: data}, nil
+}
+
+func extractLegacyTimestamp(item map[string]json.RawMessage, path string) (int64, error) {
+	for _, key := range []string{"ts", "timestamp", "time"} {
+		raw, ok := item[key]
+		if !ok {
+			continue
+		}
+		ts, err := parseInt64JSON(raw)
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s: %w", key, err)
+		}
+		return ts, nil
+	}
+
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	ts, err := strconv.ParseInt(base, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("missing ts/timestamp/time and filename is not unix timestamp")
+	}
+	return ts, nil
+}
+
+func parseInt64JSON(raw json.RawMessage) (int64, error) {
+	var i int64
+	if err := json.Unmarshal(raw, &i); err == nil {
+		return i, nil
+	}
+
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		return int64(f), nil
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		i, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return i, nil
+	}
+
+	return 0, fmt.Errorf("expected number or numeric string")
+}
+
+func extractLegacyData(item map[string]json.RawMessage) (string, error) {
+	raw, ok := item["data"]
+	if !ok {
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			return "", err
+		}
+		return compactJSONString(encoded)
+	}
+
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString, nil
+	}
+	return compactJSONString(raw)
+}
+
+func compactJSONString(raw []byte) (string, error) {
+	var b bytes.Buffer
+	if err := json.Compact(&b, raw); err != nil {
+		return "", err
+	}
+	return b.String(), nil
 }
 
 func importKeyValues(client *fluxiondb.Client, col, colDir string) (int, error) {

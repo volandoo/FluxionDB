@@ -27,9 +27,12 @@ You can also pass an optional connection label:
 - `add-key` / `remove-key` – manage scoped API keys (requires master key).
 - `export --col <collection> --out-dir DIR` – dump every document to `DIR/<col>/<doc>.jsonl` along with `key_value.json`. Add `--api-keys` or `--all` to also write `apikeys.json`.
 - `import --col <collection> --in-dir DIR` – replay an export back into a live collection. Combine with `--api-keys` or `--all` to restore API keys from `apikeys.json`.
+- `import --legacy --col <collection> --in-dir DIR` – import legacy file-based backups laid out as `DIR/<collection>/<document>/*.json`.
 
 ### Export/import layout
 
 Exports create `DIR/<collection>` with one `<doc>.jsonl` per document (JSON Lines, one `{ts, doc, data}` per line) and a `key_value.json` file containing the collection's key/value map. When `--api-keys` or `--all` is provided, an `apikeys.json` file is written directly under `DIR/`. Imports expect the same layout and can also ingest `apikeys.json` to restore server credentials; delete the target collection first if you need a clean slate.
+
+For pre-SQLite backups, use `--legacy`. Legacy imports expect `DIR/<collection>/<document>/*.json`, where each JSON file contains either a single `{data, ts}` object or an array of those objects.
 
 All commands share `--url`, `--apikey`, and optional `--name` flags. See `--help` on any subcommand for details.

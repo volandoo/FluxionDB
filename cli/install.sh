@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO="${REPO:-volandoo/FluxionDB}"
 TAG_PREFIX="${TAG_PREFIX:-cli-v}"
-CLI_VERSION="${CLI_VERSION:-0.5.0}"
+CLI_VERSION="${CLI_VERSION:-0.7.0}"
 BINARY_BASE_NAME="fluxiondb"
 TAG_NAME="${TAG_PREFIX}${CLI_VERSION}"
 DOWNLOAD_BASE="https://github.com/${REPO}/releases/download/${TAG_NAME}"
