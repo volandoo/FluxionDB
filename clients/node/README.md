@@ -68,6 +68,13 @@ console.log("History:", history);
 const env = await client.getValues({ col: "config", key: "/env\\..*/" });
 console.log(env);
 
+// Add a 3s per-request timeout (rejects with TimeoutError on expiry)
+const latestWithTimeout = await client.fetchLatestRecords(
+    { col: "sensors", ts: Date.now() },
+    3000,
+);
+console.log(latestWithTimeout);
+
 // Inspect active WebSocket connections (ip + ms since connected)
 const connections = await client.getConnections();
 console.log(connections);
@@ -215,6 +222,8 @@ await client.addApiKey({
 ## Connection & Error Handling
 
 The client includes automatic reconnection with exponential backoff. It will retry up to 5 times with a 5-second interval between attempts. Failed requests will be rejected with an error.
+
+- Every request method accepts an optional `timeout` (ms) as the last argument. When elapsed, the promise rejects with a `TimeoutError` and the request is removed from the client's inflight queue.
 
 ## Important Notes
 
