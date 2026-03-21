@@ -289,7 +289,7 @@ void Collection::deleteRecord(const QString &key, qint64 ts)
 
     const auto capacity = records.capacity();
     const auto size = records.size();
-    if (capacity > 0 && size * 2 < capacity)
+    if (capacity > 0 && size * 3 < capacity)
     {
         std::vector<std::unique_ptr<DataRecord>> compacted;
         compacted.reserve(size);
@@ -346,18 +346,10 @@ void Collection::deleteRecordsInRange(const QString &key, qint64 fromTs, qint64 
         return;
     }
     
-    const auto capacity = records.capacity();
-    const auto size = records.size();
-    if (capacity > 0 && size * 2 < capacity)
-    {
-        std::vector<std::unique_ptr<DataRecord>> compacted;
-        compacted.reserve(size);
-        std::move(records.begin(), records.end(), std::back_inserter(compacted));
-        records.swap(compacted);
+    records.shrink_to_fit();
 #ifdef __linux__
-        malloc_trim(0);
+    malloc_trim(0);
 #endif
-    }
     if (m_storage != nullptr)
     {
         m_storage->deleteRecordsInRange(m_name, key, fromTs, toTs);
