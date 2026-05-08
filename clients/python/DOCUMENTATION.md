@@ -66,7 +66,7 @@ client.delete_collection({"col": "temperature"})
 
 Retrieves the most recent record per document within a collection. The `doc` field accepts literal IDs or `/regex/flags` strings.
 
-Use `where` to keep only latest records whose `data` contains a plain string. Use `filter` to drop latest records whose `data` contains a plain string. When both are provided, records must match `where` and must not match `filter`.
+Use `where` to keep only latest records whose `data` matches a predicate. Use `filter` to drop latest records whose `data` matches a predicate. Predicates are plain substring matches by default, or regex matches when written as `/pattern/flags`.
 
 ```python
 latest = client.fetch_latest_records({
@@ -74,7 +74,7 @@ latest = client.fetch_latest_records({
     "ts": int(time.time() * 1000),
     "doc": "/device-[12]/",
     "from": int(time.time() * 1000) - 3_600_000,
-    "where": "state:flying",
+    "where": "/state:(flying|landed)/",
     "filter": "quality:bad",
 })
 print(latest["device-1"]["data"])
@@ -106,7 +106,7 @@ client.insert_single_record({
 
 ## client.fetch_document(params)
 
-Fetches records for a specific document within a time range, with optional `limit`/`reverse`. `where` keeps records whose `data` contains a plain string; `filter` drops records whose `data` contains a plain string.
+Fetches records for a specific document within a time range, with optional `limit`/`reverse`. `where` keeps records whose `data` matches a predicate; `filter` drops records whose `data` matches a predicate. Predicates are plain substring matches by default, or regex matches when written as `/pattern/flags`.
 
 ```python
 history = client.fetch_document({
@@ -116,7 +116,7 @@ history = client.fetch_document({
     "to": ts,
     "limit": 100,
     "reverse": True,
-    "where": "state:flying",
+    "where": "/state:(flying|landed)/",
     "filter": "quality:bad",
 })
 ```

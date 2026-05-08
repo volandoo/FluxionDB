@@ -115,8 +115,8 @@ type FetchLatestRecordsParams struct {
 	TS     int64  `json:"ts"`
 	Doc    string `json:"doc,omitempty"`
 	From   *int64 `json:"from,omitempty"`
-	Where  string `json:"where,omitempty"`
-	Filter string `json:"filter,omitempty"`
+	Where  string `json:"where,omitempty"`  // Optional substring or /regex/flags include predicate
+	Filter string `json:"filter,omitempty"` // Optional substring or /regex/flags exclude predicate
 }
 
 // DeleteCollectionParams represents parameters for deleting a collection
@@ -132,8 +132,8 @@ type FetchRecordsParams struct {
 	To      int64  `json:"to"`
 	Limit   *int   `json:"limit,omitempty"`
 	Reverse *bool  `json:"reverse,omitempty"`
-	Where   string `json:"where,omitempty"`
-	Filter  string `json:"filter,omitempty"`
+	Where   string `json:"where,omitempty"`  // Optional substring or /regex/flags include predicate
+	Filter  string `json:"filter,omitempty"` // Optional substring or /regex/flags exclude predicate
 }
 
 // DeleteDocumentParams represents parameters for deleting a document

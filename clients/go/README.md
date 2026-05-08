@@ -72,8 +72,8 @@ func main() {
         Doc:    "device123",
         From:   now - 3600, // 1 hour ago
         To:     now,
-        Where:  "state:flying", // optional: keep records containing this string
-        Filter: "quality:bad",  // optional: drop records containing this string
+        Where:  "/state:(flying|landed)/", // optional: substring or /regex/flags include predicate
+        Filter: "quality:bad",             // optional: substring or /regex/flags exclude predicate
     })
     if err != nil {
         log.Printf("Failed to fetch records: %v", err)

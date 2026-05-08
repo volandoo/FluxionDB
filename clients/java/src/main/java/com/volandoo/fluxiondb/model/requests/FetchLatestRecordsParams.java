@@ -10,8 +10,8 @@ public final class FetchLatestRecordsParams {
     private final long ts;
     private final String doc;
     private final Long from; // Optional
-    private final String where; // Optional
-    private final String filter; // Optional
+    private final String where; // Optional substring or /regex/flags include predicate
+    private final String filter; // Optional substring or /regex/flags exclude predicate
 
     private FetchLatestRecordsParams(Builder builder) {
         this.col = Objects.requireNonNull(builder.col, "col cannot be null");
@@ -78,11 +78,17 @@ public final class FetchLatestRecordsParams {
             return this;
         }
 
+        /**
+         * Keep records whose data matches this substring or /regex/flags predicate.
+         */
         public Builder where(String where) {
             this.where = where;
             return this;
         }
 
+        /**
+         * Drop records whose data matches this substring or /regex/flags predicate.
+         */
         public Builder filter(String filter) {
             this.filter = filter;
             return this;

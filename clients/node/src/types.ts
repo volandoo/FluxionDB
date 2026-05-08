@@ -101,7 +101,9 @@ export type FetchLatestRecordsParams = {
   ts: number;
   doc?: string;
   from?: number;
+  /** Optional substring or /regex/flags include predicate for record data. */
   where?: string;
+  /** Optional substring or /regex/flags exclude predicate for record data. */
   filter?: string;
 };
 
@@ -116,7 +118,9 @@ export type FetchRecordsParams = {
   to: number;
   limit?: number;
   reverse?: boolean;
+  /** Optional substring or /regex/flags include predicate for record data. */
   where?: string;
+  /** Optional substring or /regex/flags exclude predicate for record data. */
   filter?: string;
 };
 

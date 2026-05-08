@@ -170,7 +170,7 @@ CompletableFuture<Map<String, RecordResponse>> fetchLatestRecords(FetchLatestRec
 ```
 
 **Parameters:**
-- `params` - Fetch parameters (supports regex patterns in `doc` field). `where` keeps records whose data contains a plain string; `filter` drops records whose data contains a plain string.
+- `params` - Fetch parameters (supports regex patterns in `doc` field). `where` keeps records whose data matches a substring or `/regex/flags`; `filter` drops records whose data matches a substring or `/regex/flags`.
 
 **Returns:** Map of document IDs to latest records
 
@@ -181,8 +181,8 @@ FetchLatestRecordsParams params = FetchLatestRecordsParams.builder()
     .ts(now)
     .doc("/device-[0-9]+/")  // Regex pattern (optional)
     .from(now - 3600)        // Optional: filter by timestamp
-    .where("state:flying")   // Optional: include predicate
-    .filter("quality:bad")   // Optional: exclude predicate
+    .where("/state:(flying|landed)/") // Optional: substring or /regex/flags include predicate
+    .filter("quality:bad")            // Optional: substring or /regex/flags exclude predicate
     .build();
 
 Map<String, RecordResponse> latest = client.fetchLatestRecords(params).get();
@@ -201,7 +201,7 @@ CompletableFuture<List<RecordResponse>> fetchDocument(FetchRecordsParams params)
 ```
 
 **Parameters:**
-- `params` - Fetch parameters with time range. `where` keeps records whose data contains a plain string; `filter` drops records whose data contains a plain string.
+- `params` - Fetch parameters with time range. `where` keeps records whose data matches a substring or `/regex/flags`; `filter` drops records whose data matches a substring or `/regex/flags`.
 
 **Example:**
 ```java
@@ -212,8 +212,8 @@ FetchRecordsParams params = FetchRecordsParams.builder()
     .to(now)
     .limit(100)            // Optional: max records
     .reverse(true)         // Optional: newest first
-    .where("state:flying") // Optional: include predicate
-    .filter("quality:bad") // Optional: exclude predicate
+    .where("/state:(flying|landed)/") // Optional: substring or /regex/flags include predicate
+    .filter("quality:bad")            // Optional: substring or /regex/flags exclude predicate
     .build();
 
 List<RecordResponse> history = client.fetchDocument(params).get();
@@ -484,8 +484,8 @@ FetchLatestRecordsParams.builder()
     .ts(long ts)              // Required
     .doc(String doc)          // Optional: literal or /regex/
     .from(long from)          // Optional: timestamp filter
-    .where(String where)      // Optional: keep records whose data contains this string
-    .filter(String filter)    // Optional: drop records whose data contains this string
+    .where(String where)      // Optional: keep records whose data matches a substring or /regex/flags
+    .filter(String filter)    // Optional: drop records whose data matches a substring or /regex/flags
     .build()
 ```
 
@@ -499,8 +499,8 @@ FetchRecordsParams.builder()
     .to(long to)              // Required
     .limit(int limit)         // Optional
     .reverse(boolean reverse) // Optional
-    .where(String where)      // Optional: keep records whose data contains this string
-    .filter(String filter)    // Optional: drop records whose data contains this string
+    .where(String where)      // Optional: keep records whose data matches a substring or /regex/flags
+    .filter(String filter)    // Optional: drop records whose data matches a substring or /regex/flags
     .build()
 ```
 

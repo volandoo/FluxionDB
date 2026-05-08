@@ -63,7 +63,7 @@ await client.deleteCollection({ col: "temperature" });
 
 Retrieves the most recent record per document within a collection. Optionally scope by document ID and lower timestamp bound. The `doc` field accepts literal identifiers or `/regex/flags` strings (e.g. `/device-.*/i`) to match multiple documents server-side.
 
-Use `where` to keep only latest records whose `data` contains a plain string. Use `filter` to drop latest records whose `data` contains a plain string. When both are provided, records must match `where` and must not match `filter`.
+Use `where` to keep only latest records whose `data` matches a predicate. Use `filter` to drop latest records whose `data` matches a predicate. Predicates are plain substring matches by default, or regex matches when written as `/pattern/flags`.
 
 ```ts
 const latest = await client.fetchLatestRecords({
@@ -71,8 +71,8 @@ const latest = await client.fetchLatestRecords({
     ts: Date.now(),
     doc: "/device-.*/i", // literal value also supported
     from: Date.now() - 3600_000, // optional
-    where: "state:flying", // optional include predicate
-    filter: "quality:bad", // optional exclude predicate
+    where: "/state:(flying|landed)/", // optional substring or /regex/flags include predicate
+    filter: "quality:bad", // optional substring or /regex/flags exclude predicate
 });
 console.log(latest["device-a"].data);
 ```
@@ -113,7 +113,7 @@ await client.insertSingleRecord({
 
 ## client.fetchDocument(params)
 
-Fetches records for a specific document using time window filters (and optional limit/reverse). `where` keeps records whose `data` contains a plain string; `filter` drops records whose `data` contains a plain string.
+Fetches records for a specific document using time window filters (and optional limit/reverse). `where` keeps records whose `data` matches a predicate; `filter` drops records whose `data` matches a predicate. Predicates are plain substring matches by default, or regex matches when written as `/pattern/flags`.
 
 ```ts
 const history = await client.fetchDocument({
@@ -123,7 +123,7 @@ const history = await client.fetchDocument({
     to: Date.now(),
     limit: 100,
     reverse: true,
-    where: "state:flying",
+    where: "/state:(flying|landed)/",
     filter: "quality:bad",
 });
 ```

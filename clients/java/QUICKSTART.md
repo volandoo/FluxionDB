@@ -73,7 +73,7 @@ public class QuickStart {
         FetchLatestRecordsParams params = FetchLatestRecordsParams.builder()
             .col("readings")
             .ts(now + 1)
-            .where("temperature")
+            .where("/temperature|humidity/")
             .filter("quality:bad")
             .build();
 
@@ -147,7 +147,7 @@ FetchLatestRecordsParams params = FetchLatestRecordsParams.builder()
     .col("readings")
     .ts(now)
     .doc("/sensor-.*/")  // Regex pattern
-    .where("state:flying")
+    .where("/state:(flying|landed)/")
     .filter("quality:bad")
     .build();
 

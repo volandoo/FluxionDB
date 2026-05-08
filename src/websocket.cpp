@@ -76,6 +76,11 @@ bool tryParseRegexPattern(const QString &candidate, QRegularExpression *regexOut
         {
             options |= QRegularExpression::DotMatchesEverythingOption;
         }
+        else
+        {
+            qWarning() << "Invalid regex flag" << flag << "in pattern" << candidate;
+            return false;
+        }
     }
 
     QRegularExpression regex(pattern, options);
@@ -91,6 +96,16 @@ bool tryParseRegexPattern(const QString &candidate, QRegularExpression *regexOut
     }
 
     return true;
+}
+
+bool recordDataMatches(const std::string &data, const std::string &literal, const QRegularExpression *regex)
+{
+    if (regex != nullptr)
+    {
+        return regex->match(QString::fromStdString(data)).hasMatch();
+    }
+
+    return !literal.empty() && data.find(literal) != std::string::npos;
 }
 
 } // namespace
@@ -410,17 +425,21 @@ QString WebSocket::handleQuerySessions(QWebSocket *client, const MessageRequest 
     auto records = database->getAllRecords(query.ts, useRegex ? QString() : query.doc, query.from, useRegex ? &docRegex : nullptr);
 
     const std::string whereText = query.where.toStdString();
-    const bool hasWhere = !whereText.empty();
+    QRegularExpression whereRegex;
+    const bool useWhereRegex = tryParseRegexPattern(query.where, &whereRegex);
+    const bool hasWhere = useWhereRegex || !whereText.empty();
     const std::string filterText = query.filter.toStdString();
-    const bool hasFilter = !filterText.empty();
+    QRegularExpression filterRegex;
+    const bool useFilterRegex = tryParseRegexPattern(query.filter, &filterRegex);
+    const bool hasFilter = useFilterRegex || !filterText.empty();
 
     foreach (const QString &key, records.keys())
     {
-        if (hasWhere && records[key]->data.find(whereText) == std::string::npos)
+        if (hasWhere && !recordDataMatches(records[key]->data, whereText, useWhereRegex ? &whereRegex : nullptr))
         {
             continue;
         }
-        if (hasFilter && records[key]->data.find(filterText) != std::string::npos)
+        if (hasFilter && recordDataMatches(records[key]->data, filterText, useFilterRegex ? &filterRegex : nullptr))
         {
             continue;
         }
@@ -473,7 +492,11 @@ QString WebSocket::handleQueryDocument(QWebSocket *client, const MessageRequest 
         QJsonDocument doc(dataObj);
         return doc.toJson(QJsonDocument::Compact);
     }
-    auto records = database->getAllRecordsForDocument(queryDocument.doc, queryDocument.from, queryDocument.to, queryDocument.reverse, queryDocument.limit, queryDocument.where, queryDocument.filter);
+    QRegularExpression whereRegex;
+    const bool useWhereRegex = tryParseRegexPattern(queryDocument.where, &whereRegex);
+    QRegularExpression filterRegex;
+    const bool useFilterRegex = tryParseRegexPattern(queryDocument.filter, &filterRegex);
+    auto records = database->getAllRecordsForDocument(queryDocument.doc, queryDocument.from, queryDocument.to, queryDocument.reverse, queryDocument.limit, useWhereRegex ? QString() : queryDocument.where, useFilterRegex ? QString() : queryDocument.filter, useWhereRegex ? &whereRegex : nullptr, useFilterRegex ? &filterRegex : nullptr);
 
     foreach (const DataRecord *record, records)
     {

@@ -52,8 +52,8 @@ const latest = await client.fetchLatestRecords({
     col: "sensors",
     ts: Date.now(),
     doc: "/device-[12]/", // literal IDs also supported
-    where: "state:flying", // optional: keep records containing this string
-    filter: "quality:bad", // optional: drop records containing this string
+    where: "/state:(flying|landed)/", // optional: substring or /regex/flags include predicate
+    filter: "quality:bad", // optional: substring or /regex/flags exclude predicate
 });
 console.log("Latest records:", latest);
 
@@ -150,13 +150,13 @@ await client.disconnect();
     ts: number;      // Query timestamp
     doc?: string;    // Optional: literal doc ID or `/regex/flags`
     from?: number;   // Optional: only include records after this ts
-    where?: string;  // Optional: keep records whose data contains this string
-    filter?: string; // Optional: drop records whose data contains this string
+    where?: string;  // Optional: keep records whose data matches this substring or /regex/flags
+    filter?: string; // Optional: drop records whose data matches this substring or /regex/flags
 }
 ```
 
 > Pass document filters as either literal IDs or `/regex/flags` strings (for example `/device-.*/i`) to let the server match multiple documents.
-> `where` and `filter` are plain string predicates on record data. `where` includes matching records; `filter` excludes matching records.
+> `where` and `filter` are substring predicates on record data by default, or regex predicates when written as `/pattern/flags`. `where` includes matching records; `filter` excludes matching records.
 
 ### FetchRecordsParams
 
@@ -168,8 +168,8 @@ await client.disconnect();
     to: number;      // End timestamp
     limit?: number;  // Optional: max records to return
     reverse?: boolean; // Optional: return in reverse order
-    where?: string;  // Optional: keep records whose data contains this string
-    filter?: string; // Optional: drop records whose data contains this string
+    where?: string;  // Optional: keep records whose data matches this substring or /regex/flags
+    filter?: string; // Optional: drop records whose data matches this substring or /regex/flags
 }
 ```
 

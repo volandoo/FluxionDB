@@ -145,6 +145,29 @@ describe("FluxionDBClient Integration", () => {
         data: "session_id:123 state:flying quality:ok",
       },
     ]);
+
+    const regexLatest = await client.fetchLatestRecords({
+      col,
+      ts: 999,
+      where: "/state:(flying|landed)/",
+      filter: "/quality:bad/",
+    });
+    expect(Object.keys(regexLatest).sort()).toEqual(["session_b", "session_c"]);
+
+    const regexHistory = await client.fetchDocument({
+      col,
+      doc: "session_a",
+      from: 0,
+      to: 999,
+      where: "/state:(flying|landed)/",
+      filter: "/quality:bad/",
+    });
+    expect(regexHistory).toEqual([
+      {
+        ts: 100,
+        data: "session_id:123 state:flying quality:ok",
+      },
+    ]);
   }, 10000);
 
   it("should fetch key values using regex patterns", async () => {
