@@ -208,8 +208,16 @@ void WebSocket::onNewConnection()
             << "ID" << socket->objectName() << "Scope" << scopeToString(entry->scope);
     connect(socket, &QWebSocket::textMessageReceived, this, &WebSocket::processMessage);
     connect(socket, &QWebSocket::disconnected, this, &WebSocket::socketDisconnected);
+    connect(socket, &QWebSocket::errorOccurred, this, [socket](QAbstractSocket::SocketError error) {
+        qWarning() << QTime::currentTime().toString() << "WebSocket error:"
+                   << socket->peerAddress().toString()
+                   << "ID" << socket->objectName()
+                   << "Error" << static_cast<int>(error)
+                   << "Text" << socket->errorString();
+    });
     m_clients << socket;
     m_connectionTimes[socket->objectName()] = QDateTime::currentMSecsSinceEpoch();
+    m_clientMessageCounts[socket->objectName()] = 0;
 
     // Send authentication success message
     QJsonObject readyMessage;
@@ -223,13 +231,18 @@ void WebSocket::processMessage(const QString &message)
 {
     QWebSocket *client = qobject_cast<QWebSocket *>(sender());
     if (!client) { return; }
+
+    ++m_clientMessageCounts[client->objectName()];
         
     bool ok;
     MessageRequest msg = MessageRequest::fromJson(message, &ok);
 
     if (!ok)
     {
-        qWarning() << QTime::currentTime().toString() << "Invalid message" << message;
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid message"
+                   << "Peer" << client->peerAddress().toString()
+                   << "ID" << client->objectName()
+                   << "Message" << message;
         client->sendTextMessage("");
         client->close();
         return;
@@ -341,7 +354,11 @@ void WebSocket::handleMessage(QWebSocket *client, const MessageRequest &message)
     }
     else
     {
-        qWarning() << "Unknown message type:" << message.type;
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: unknown message type"
+                   << "Peer" << client->peerAddress().toString()
+                   << "ID" << client->objectName()
+                   << "Request" << message.id
+                   << "Type" << message.type;
         client->sendTextMessage("{\"error\": \"Unknown message type\"}");
         client->close();
         return;
@@ -362,7 +379,8 @@ QString WebSocket::handleInsert(QWebSocket *client, const MessageRequest &messag
     QList<InsertRequest> payloads = InsertRequest::fromJson(message.data, &ok);
     if (!ok)
     {
-        qWarning() << "Invalid insert message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid insert message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -390,7 +408,8 @@ QString WebSocket::handleQuerySessions(QWebSocket *client, const MessageRequest 
     QuerySessions query = QuerySessions::fromJson(message.data, &ok);
     if (!ok)
     {
-        qWarning() << "Invalid query sessions message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid query sessions message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -456,7 +475,8 @@ QString WebSocket::handleQueryDocument(QWebSocket *client, const MessageRequest 
     QueryDocument queryDocument = QueryDocument::fromJson(message.data, &ok);
     if (!ok)
     {
-        qWarning() << "Invalid query document message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid query document message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -491,7 +511,8 @@ QString WebSocket::handleDeleteDocument(QWebSocket *client, const MessageRequest
     DeleteDocument query = DeleteDocument::fromJson(message.data  , &ok);
     if (!ok)
     {
-        qWarning() << "Invalid delete document message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid delete document message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -554,7 +575,8 @@ QString WebSocket::handleDeleteCollection(QWebSocket *client, const MessageReque
     DeleteCollection query = DeleteCollection::fromJson(message.data, &ok);
     if (!ok)
     {
-        qWarning() << "Invalid delete collection message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid delete collection message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -579,7 +601,8 @@ QString WebSocket::handleDeleteRecord(QWebSocket *client, const MessageRequest &
     DeleteRecord query = DeleteRecord::fromJson(message.data, &ok);
     if (!ok)
     {
-        qWarning() << "Invalid delete record message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid delete record message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -602,7 +625,8 @@ QString WebSocket::handleDeleteMultipleRecords(QWebSocket *client, const Message
     DeleteMultipleRecords query = DeleteMultipleRecords::fromJson(message.data, &ok);
     if (!ok)
     {
-        qWarning() << "Invalid delete multiple records message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid delete multiple records message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -629,7 +653,8 @@ QString WebSocket::handleDeleteRecordsRange(QWebSocket *client, const MessageReq
     DeleteRecordsRange query = DeleteRecordsRange::fromJson(message.data, &ok);
     if (!ok || !query.isValid())
     {
-        qWarning() << "Invalid delete records range message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid delete records range message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -654,7 +679,8 @@ QString WebSocket::handleSetValue(QWebSocket *client, const MessageRequest &mess
     KeyValue kv = KeyValue::fromJson(message.data, &ok);
     if (!ok || !kv.isValid() || !kv.hasKey() || !kv.hasValue())
     {
-        qWarning() << "Invalid set value message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid set value message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -681,7 +707,8 @@ QString WebSocket::handleGetValue(QWebSocket *client, const MessageRequest &mess
     KeyValue kv = KeyValue::fromJson(message.data, &ok);
     if (!ok || !kv.isValid() || !kv.hasKey())
     {
-        qWarning() << "Invalid get value message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid get value message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -708,7 +735,8 @@ QString WebSocket::handleGetValues(QWebSocket *client, const MessageRequest &mes
     KeyValue kv = KeyValue::fromJson(message.data, &ok);
     if (!ok || !kv.isValid() || !kv.hasKey())
     {
-        qWarning() << "Invalid get values message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid get values message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -753,7 +781,8 @@ QString WebSocket::handleRemoveValue(QWebSocket *client, const MessageRequest &m
     KeyValue kv = KeyValue::fromJson(message.data, &ok);
     if (!ok || !kv.isValid() || !kv.hasKey())
     {
-        qWarning() << "Invalid remove value message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid remove value message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -778,7 +807,8 @@ QString WebSocket::handleGetAllValues(QWebSocket *client, const MessageRequest &
     KeyValue kv = KeyValue::fromJson(message.data, &ok);
     if (!ok || !kv.isValid())
     {
-        qWarning() << "Invalid get all values message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid get all values message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -810,7 +840,8 @@ QString WebSocket::handleGetAllKeys(QWebSocket *client, const MessageRequest &me
     KeyValue kv = KeyValue::fromJson(message.data, &ok);
     if (!ok || !kv.isValid())
     {
-        qWarning() << "Invalid get all keys message format from" << client->peerAddress().toString();
+        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid get all keys message format from" << client->peerAddress().toString()
+                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
         client->close();
         return "";
     }
@@ -1238,13 +1269,14 @@ void WebSocket::rejectClient(QWebSocket *socket, const QString &reason)
         return;
     }
 
-    qWarning() << QTime::currentTime().toString() << "Closing client"
+    qWarning() << QTime::currentTime().toString() << "Closing client for safety"
                << socket->peerAddress().toString() << "ID" << socket->objectName() << ":" << reason;
 
     m_clientScopes.erase(socket->objectName());
     m_clientKeys.erase(socket->objectName());
     m_clientNames.erase(socket->objectName());
     m_connectionTimes.erase(socket->objectName());
+    m_clientMessageCounts.erase(socket->objectName());
     m_clients.removeAll(socket);
     socket->close(QWebSocketProtocol::CloseCodePolicyViolated, reason.left(120));
     socket->deleteLater();
@@ -1255,12 +1287,27 @@ void WebSocket::socketDisconnected()
     QWebSocket *client = qobject_cast<QWebSocket *>(sender());
     if (client)
     {
+        const QString clientId = client->objectName();
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const auto connectedAtIt = m_connectionTimes.find(clientId);
+        const qint64 lifetimeMs = connectedAtIt == m_connectionTimes.end() ? -1 : now - connectedAtIt->second;
+        const auto messageCountIt = m_clientMessageCounts.find(clientId);
+        const quint64 messageCount = messageCountIt == m_clientMessageCounts.end() ? 0 : messageCountIt->second;
+
         qInfo() << QTime::currentTime().toString() << "Client disconnected:" 
-                 << client->peerAddress().toString() << "ID" << client->objectName();
-        m_clientScopes.erase(client->objectName());
-        m_clientKeys.erase(client->objectName());
-        m_clientNames.erase(client->objectName());
-        m_connectionTimes.erase(client->objectName());
+                 << client->peerAddress().toString()
+                 << "ID" << clientId
+                 << "CloseCode" << client->closeCode()
+                 << "CloseReason" << client->closeReason()
+                 << "SocketError" << client->error()
+                 << "ErrorText" << client->errorString()
+                 << "LifetimeMs" << lifetimeMs
+                 << "Messages" << messageCount;
+        m_clientScopes.erase(clientId);
+        m_clientKeys.erase(clientId);
+        m_clientNames.erase(clientId);
+        m_connectionTimes.erase(clientId);
+        m_clientMessageCounts.erase(clientId);
         m_clients.removeAll(client);
         client->deleteLater();
     }

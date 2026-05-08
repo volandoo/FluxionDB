@@ -122,6 +122,7 @@ private:
     std::unordered_map<QString, QString> m_clientKeys;
     std::unordered_map<QString, QString> m_clientNames;
     std::unordered_map<QString, qint64> m_connectionTimes;
+    std::unordered_map<QString, quint64> m_clientMessageCounts;
 
     // flush timer
     QTimer m_flushTimer;
