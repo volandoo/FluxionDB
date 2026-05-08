@@ -141,4 +141,45 @@ describe("FluxionDBClient initial connection retry", () => {
     expect(caughtError?.message).toContain("offline");
     expect(sockets.length).toBeGreaterThanOrEqual(3);
   });
+
+  it("rejects pending requests when the connection closes", async () => {
+    const sockets: MockWebSocket[] = [];
+
+    class HangingWebSocket extends MockWebSocket {
+      constructor(url: string) {
+        super(url);
+        sockets.push(this);
+        setTimeout(() => {
+          this.emitOpen();
+          this.emitMessage(JSON.stringify({ type: "ready" }));
+        }, 0);
+      }
+    }
+
+    // @ts-expect-error override for testing
+    globalThis.WebSocket = HangingWebSocket;
+
+    const client = new FluxionDBClient({
+      url: "ws://example",
+      apiKey: "key",
+      maxReconnectAttempts: 0,
+      reconnectInterval: 5,
+    });
+
+    await client.connect();
+
+    const request = client.fetchCollections();
+    await Promise.resolve();
+    sockets[0].close(1006, "connection lost");
+
+    let caughtError: Error | null = null;
+    try {
+      await request;
+    } catch (error) {
+      caughtError = error as Error;
+    }
+
+    expect(caughtError).not.toBeNull();
+    expect(caughtError?.message).toContain("timed out due to disconnection");
+  });
 });

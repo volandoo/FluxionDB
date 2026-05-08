@@ -58,6 +58,11 @@ type WebSocketMessage = {
   data: string;
 };
 
+type InflightRequest = {
+  resolve: (response: any) => void;
+  reject: (error: Error) => void;
+};
+
 type ClientOptions = {
   url: string;
   apiKey: string;
@@ -70,7 +75,7 @@ type ClientOptions = {
 class Client {
   private ws: WebSocket | null = null;
   private readonly url: string;
-  private inflightRequests: { [id: string]: (response: any) => void; } = {};
+  private inflightRequests: { [id: string]: InflightRequest; } = {};
   private isConnecting: boolean = false; // Track if we're currently attempting to connect
   private isReconnecting: boolean = false; // Flag to prevent concurrent reconnect attempts
   private reconnectAttempts: number = 0;
@@ -283,9 +288,9 @@ class Client {
 
   private handleMessage(payload: string): void {
     const response: WebSocketResponse = JSON.parse(payload);
-    const callback = this.inflightRequests[response.id];
-    if (callback) {
-      callback(response);
+    const request = this.inflightRequests[response.id];
+    if (request) {
+      request.resolve(response);
       delete this.inflightRequests[response.id];
     } else if (response.error) {
       console.warn(`Received error response: ${response.error}`);
@@ -301,9 +306,13 @@ class Client {
     // Clean up inflight requests
     for (const id in this.inflightRequests) {
       if (this.inflightRequests.hasOwnProperty(id)) {
-        console.warn(`Request ${id} timed out due to disconnection.`);
-        // You could also reject the promises here if using them,
-        //  or provide an error handling strategy.
+        const request = this.inflightRequests[id];
+        if (!request) {
+          continue;
+        }
+        const error = new Error(`Request ${id} timed out due to disconnection.`);
+        console.warn(error.message);
+        request.reject(error);
         delete this.inflightRequests[id];
       }
     }
@@ -327,8 +336,11 @@ class Client {
     const messageId = this.generateId();
 
     return new Promise((resolve, reject) => {
-      this.inflightRequests[messageId] = (response: T) => {
-        resolve(response);
+      this.inflightRequests[messageId] = {
+        resolve: (response: T) => {
+          resolve(response);
+        },
+        reject,
       };
       try {
         this.ws!.send(
