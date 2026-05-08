@@ -52,6 +52,8 @@ const latest = await client.fetchLatestRecords({
     col: "sensors",
     ts: Date.now(),
     doc: "/device-[12]/", // literal IDs also supported
+    where: "state:flying", // optional: keep records containing this string
+    filter: "quality:bad", // optional: drop records containing this string
 });
 console.log("Latest records:", latest);
 
@@ -61,6 +63,8 @@ const history = await client.fetchRecords({
     doc: "device-1",
     from: now - 3600000, // 1 hour ago
     to: now,
+    where: "state:flying",
+    filter: "quality:bad",
 });
 console.log("History:", history);
 
@@ -98,8 +102,8 @@ await client.disconnect();
 ### Time Series Methods
 
 - `insertMultipleRecords(items: InsertMessageRequest[]): Promise<InsertMessageResponse>` - Insert one or more records
-- `fetchLatestRecords(params: FetchLatestRecordsParams): Promise<Record<string, RecordResponse>>` - Fetch the latest record per document in a collection
-- `fetchRecords(params: FetchRecordsParams): Promise<RecordResponse[]>` - Fetch records for a specific document within a time range
+- `fetchLatestRecords(params: FetchLatestRecordsParams): Promise<Record<string, RecordResponse>>` - Fetch the latest record per document in a collection, optionally keeping records with `where` and excluding records with `filter`
+- `fetchRecords(params: FetchRecordsParams): Promise<RecordResponse[]>` - Fetch records for a specific document within a time range, optionally keeping records with `where` and excluding records with `filter`
 - `deleteDocument(params: DeleteDocumentParams): Promise<void>` - Delete a document
 - `deleteRecord(params: DeleteRecord): Promise<void>` - Delete a single record
 - `deleteMultipleRecords(params: DeleteRecord[]): Promise<void>` - Delete multiple records
@@ -146,10 +150,13 @@ await client.disconnect();
     ts: number;      // Query timestamp
     doc?: string;    // Optional: literal doc ID or `/regex/flags`
     from?: number;   // Optional: only include records after this ts
+    where?: string;  // Optional: keep records whose data contains this string
+    filter?: string; // Optional: drop records whose data contains this string
 }
 ```
 
 > Pass document filters as either literal IDs or `/regex/flags` strings (for example `/device-.*/i`) to let the server match multiple documents.
+> `where` and `filter` are plain string predicates on record data. `where` includes matching records; `filter` excludes matching records.
 
 ### FetchRecordsParams
 
@@ -161,6 +168,8 @@ await client.disconnect();
     to: number;      // End timestamp
     limit?: number;  // Optional: max records to return
     reverse?: boolean; // Optional: return in reverse order
+    where?: string;  // Optional: keep records whose data contains this string
+    filter?: string; // Optional: drop records whose data contains this string
 }
 ```
 

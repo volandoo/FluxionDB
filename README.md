@@ -144,6 +144,8 @@ const latest = await client.fetchLatestRecords({
     col: "sensors",
     ts: now,
     doc: "/device-[12]/",
+    where: "state:flying",
+    filter: "quality:bad",
 });
 console.log(latest);
 
@@ -152,6 +154,8 @@ const history = await client.fetchDocument({
     doc: "device-1",
     from: now - 3600,
     to: now,
+    where: "state:flying",
+    filter: "quality:bad",
 });
 console.log(history);
 
@@ -207,9 +211,11 @@ _ = client.InsertSingleDocumentRecord(fluxiondb.InsertMessageRequest{
 })
 
 latest, _ := client.FetchLatestRecords(fluxiondb.FetchLatestRecordsParams{
-    Col: "sensors",
-    TS:  now,
-    Doc: "/device-[12]/",
+    Col:    "sensors",
+    TS:     now,
+    Doc:    "/device-[12]/",
+    Where:  "state:flying",
+    Filter: "quality:bad",
 })
 fmt.Println(latest)
 
@@ -293,6 +299,8 @@ FetchLatestRecordsParams params = FetchLatestRecordsParams.builder()
     .col("sensors")
     .ts(now)
     .doc("/device-[12]/")
+    .where("state:flying")
+    .filter("quality:bad")
     .build();
 
 Map<String, RecordResponse> latest = client.fetchLatestRecords(params).get();

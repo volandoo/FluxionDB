@@ -409,8 +409,21 @@ QString WebSocket::handleQuerySessions(QWebSocket *client, const MessageRequest 
     const bool useRegex = tryParseRegexPattern(query.doc, &docRegex);
     auto records = database->getAllRecords(query.ts, useRegex ? QString() : query.doc, query.from, useRegex ? &docRegex : nullptr);
 
+    const std::string whereText = query.where.toStdString();
+    const bool hasWhere = !whereText.empty();
+    const std::string filterText = query.filter.toStdString();
+    const bool hasFilter = !filterText.empty();
+
     foreach (const QString &key, records.keys())
     {
+        if (hasWhere && records[key]->data.find(whereText) == std::string::npos)
+        {
+            continue;
+        }
+        if (hasFilter && records[key]->data.find(filterText) != std::string::npos)
+        {
+            continue;
+        }
         dataObj[key] = records[key]->toJson();
     }
 
@@ -460,7 +473,7 @@ QString WebSocket::handleQueryDocument(QWebSocket *client, const MessageRequest 
         QJsonDocument doc(dataObj);
         return doc.toJson(QJsonDocument::Compact);
     }
-    auto records = database->getAllRecordsForDocument(queryDocument.doc, queryDocument.from, queryDocument.to, queryDocument.reverse, queryDocument.limit);
+    auto records = database->getAllRecordsForDocument(queryDocument.doc, queryDocument.from, queryDocument.to, queryDocument.reverse, queryDocument.limit, queryDocument.where, queryDocument.filter);
 
     foreach (const DataRecord *record, records)
     {

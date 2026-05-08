@@ -10,6 +10,8 @@ struct QueryDocument {
     bool reverse;
     QString doc;
     QString col;
+    QString where;
+    QString filter;
 
     
     static QueryDocument fromJson(const QString& jsonString, bool* ok = nullptr);

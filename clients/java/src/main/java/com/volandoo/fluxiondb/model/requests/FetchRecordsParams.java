@@ -12,6 +12,8 @@ public final class FetchRecordsParams {
     private final long to;
     private final Integer limit;   // Optional
     private final Boolean reverse; // Optional
+    private final String where;    // Optional
+    private final String filter;   // Optional
 
     private FetchRecordsParams(Builder builder) {
         this.col = Objects.requireNonNull(builder.col, "col cannot be null");
@@ -20,6 +22,8 @@ public final class FetchRecordsParams {
         this.to = builder.to;
         this.limit = builder.limit;
         this.reverse = builder.reverse;
+        this.where = builder.where;
+        this.filter = builder.filter;
     }
 
     public String getCol() {
@@ -46,6 +50,14 @@ public final class FetchRecordsParams {
         return reverse;
     }
 
+    public String getWhere() {
+        return where;
+    }
+
+    public String getFilter() {
+        return filter;
+    }
+
     public static Builder builder() {
         return new Builder();
     }
@@ -57,6 +69,8 @@ public final class FetchRecordsParams {
         private long to;
         private Integer limit;
         private Boolean reverse;
+        private String where;
+        private String filter;
 
         public Builder col(String col) {
             this.col = col;
@@ -88,6 +102,16 @@ public final class FetchRecordsParams {
             return this;
         }
 
+        public Builder where(String where) {
+            this.where = where;
+            return this;
+        }
+
+        public Builder filter(String filter) {
+            this.filter = filter;
+            return this;
+        }
+
         public FetchRecordsParams build() {
             return new FetchRecordsParams(this);
         }
@@ -102,6 +126,8 @@ public final class FetchRecordsParams {
                 ", to=" + to +
                 ", limit=" + limit +
                 ", reverse=" + reverse +
+                ", where='" + where + '\'' +
+                ", filter='" + filter + '\'' +
                 '}';
     }
 }

@@ -101,6 +101,8 @@ export type FetchLatestRecordsParams = {
   ts: number;
   doc?: string;
   from?: number;
+  where?: string;
+  filter?: string;
 };
 
 export type DeleteCollectionParams = {
@@ -114,6 +116,8 @@ export type FetchRecordsParams = {
   to: number;
   limit?: number;
   reverse?: boolean;
+  where?: string;
+  filter?: string;
 };
 
 export type DeleteDocumentParams = {

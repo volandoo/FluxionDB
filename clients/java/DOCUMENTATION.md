@@ -170,7 +170,7 @@ CompletableFuture<Map<String, RecordResponse>> fetchLatestRecords(FetchLatestRec
 ```
 
 **Parameters:**
-- `params` - Fetch parameters (supports regex patterns in `doc` field)
+- `params` - Fetch parameters (supports regex patterns in `doc` field). `where` keeps records whose data contains a plain string; `filter` drops records whose data contains a plain string.
 
 **Returns:** Map of document IDs to latest records
 
@@ -181,6 +181,8 @@ FetchLatestRecordsParams params = FetchLatestRecordsParams.builder()
     .ts(now)
     .doc("/device-[0-9]+/")  // Regex pattern (optional)
     .from(now - 3600)        // Optional: filter by timestamp
+    .where("state:flying")   // Optional: include predicate
+    .filter("quality:bad")   // Optional: exclude predicate
     .build();
 
 Map<String, RecordResponse> latest = client.fetchLatestRecords(params).get();
@@ -199,7 +201,7 @@ CompletableFuture<List<RecordResponse>> fetchDocument(FetchRecordsParams params)
 ```
 
 **Parameters:**
-- `params` - Fetch parameters with time range
+- `params` - Fetch parameters with time range. `where` keeps records whose data contains a plain string; `filter` drops records whose data contains a plain string.
 
 **Example:**
 ```java
@@ -210,6 +212,8 @@ FetchRecordsParams params = FetchRecordsParams.builder()
     .to(now)
     .limit(100)            // Optional: max records
     .reverse(true)         // Optional: newest first
+    .where("state:flying") // Optional: include predicate
+    .filter("quality:bad") // Optional: exclude predicate
     .build();
 
 List<RecordResponse> history = client.fetchDocument(params).get();
@@ -480,6 +484,8 @@ FetchLatestRecordsParams.builder()
     .ts(long ts)              // Required
     .doc(String doc)          // Optional: literal or /regex/
     .from(long from)          // Optional: timestamp filter
+    .where(String where)      // Optional: keep records whose data contains this string
+    .filter(String filter)    // Optional: drop records whose data contains this string
     .build()
 ```
 
@@ -493,6 +499,8 @@ FetchRecordsParams.builder()
     .to(long to)              // Required
     .limit(int limit)         // Optional
     .reverse(boolean reverse) // Optional
+    .where(String where)      // Optional: keep records whose data contains this string
+    .filter(String filter)    // Optional: drop records whose data contains this string
     .build()
 ```
 

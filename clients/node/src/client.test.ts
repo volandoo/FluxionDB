@@ -93,6 +93,60 @@ describe("FluxionDBClient Integration", () => {
     expect(keys).toEqual(expect.arrayContaining(["document_1", "document_2"]));
   }, 10000);
 
+  it("should support optional where and filter content predicates", async () => {
+    const col = `${testCollection}_predicates`;
+    await client.deleteCollection({ col });
+    await client.insertMultipleRecords([
+      {
+        col,
+        doc: "session_a",
+        ts: 100,
+        data: "session_id:123 state:flying quality:ok",
+      },
+      {
+        col,
+        doc: "session_a",
+        ts: 200,
+        data: "session_id:123 state:landed quality:bad",
+      },
+      {
+        col,
+        doc: "session_b",
+        ts: 150,
+        data: "session_id:999 state:flying quality:ok",
+      },
+      {
+        col,
+        doc: "session_c",
+        ts: 175,
+        data: "session_id:123 state:flying quality:ok",
+      },
+    ]);
+
+    const latest = await client.fetchLatestRecords({
+      col,
+      ts: 999,
+      where: "session_id:123",
+      filter: "quality:bad",
+    });
+    expect(Object.keys(latest).sort()).toEqual(["session_c"]);
+
+    const history = await client.fetchDocument({
+      col,
+      doc: "session_a",
+      from: 0,
+      to: 999,
+      where: "session_id:123",
+      filter: "quality:bad",
+    });
+    expect(history).toEqual([
+      {
+        ts: 100,
+        data: "session_id:123 state:flying quality:ok",
+      },
+    ]);
+  }, 10000);
+
   it("should fetch key values using regex patterns", async () => {
     const values = await client.getValues({
       col: kvCollection,

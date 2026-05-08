@@ -55,6 +55,12 @@ public class TimeSeriesOperations {
         if (params.getFrom() != null) {
             builder.add("from", params.getFrom());
         }
+        if (params.getWhere() != null) {
+            builder.add("where", params.getWhere());
+        }
+        if (params.getFilter() != null) {
+            builder.add("filter", params.getFilter());
+        }
 
         String data = builder.build();
 
@@ -88,6 +94,12 @@ public class TimeSeriesOperations {
         }
         if (params.getReverse() != null) {
             builder.add("reverse", params.getReverse());
+        }
+        if (params.getWhere() != null) {
+            builder.add("where", params.getWhere());
+        }
+        if (params.getFilter() != null) {
+            builder.add("filter", params.getFilter());
         }
 
         String data = builder.build();

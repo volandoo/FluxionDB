@@ -31,7 +31,13 @@ now = int(time.time())
 client.insert_multiple_records([
     {"ts": now, "doc": "device-1", "data": '{"temperature":22.5}', "col": "sensors"},
 ])
-latest = client.fetch_latest_records(col="sensors", ts=now, doc="/device-[12]/")
+latest = client.fetch_latest_records({
+    "col": "sensors",
+    "ts": now,
+    "doc": "/device-[12]/",
+    "where": "state:flying",  # Optional: keep records containing this string
+    "filter": "quality:bad",  # Optional: drop records containing this string
+})
 print(latest)
 
 client.add_api_key("sensor-reader", ApiKeyScope.READ_ONLY)

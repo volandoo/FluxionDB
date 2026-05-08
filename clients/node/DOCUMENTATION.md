@@ -63,12 +63,16 @@ await client.deleteCollection({ col: "temperature" });
 
 Retrieves the most recent record per document within a collection. Optionally scope by document ID and lower timestamp bound. The `doc` field accepts literal identifiers or `/regex/flags` strings (e.g. `/device-.*/i`) to match multiple documents server-side.
 
+Use `where` to keep only latest records whose `data` contains a plain string. Use `filter` to drop latest records whose `data` contains a plain string. When both are provided, records must match `where` and must not match `filter`.
+
 ```ts
 const latest = await client.fetchLatestRecords({
     col: "temperature",
     ts: Date.now(),
     doc: "/device-.*/i", // literal value also supported
     from: Date.now() - 3600_000, // optional
+    where: "state:flying", // optional include predicate
+    filter: "quality:bad", // optional exclude predicate
 });
 console.log(latest["device-a"].data);
 ```
@@ -109,7 +113,7 @@ await client.insertSingleRecord({
 
 ## client.fetchDocument(params)
 
-Fetches records for a specific document using time window filters (and optional limit/reverse).
+Fetches records for a specific document using time window filters (and optional limit/reverse). `where` keeps records whose `data` contains a plain string; `filter` drops records whose `data` contains a plain string.
 
 ```ts
 const history = await client.fetchDocument({
@@ -119,6 +123,8 @@ const history = await client.fetchDocument({
     to: Date.now(),
     limit: 100,
     reverse: true,
+    where: "state:flying",
+    filter: "quality:bad",
 });
 ```
 
