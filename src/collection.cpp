@@ -193,7 +193,7 @@ QHash<QString, QList<DataRecord *>> Collection::getSessionData(qint64 from, qint
     return result;
 }
 
-QList<DataRecord *> Collection::getAllRecordsForDocument(const QString &key, qint64 from, qint64 to, bool reverse, qint64 limit, const QString &where, const QString &filter, const QRegularExpression *whereRegex, const QRegularExpression *filterRegex)
+QList<DataRecord *> Collection::getAllRecordsForDocument(const QString &key, qint64 from, qint64 to, bool reverse, qint64 limit, const QString &where, const QString &filter)
 {
     QList<DataRecord *> result;
     auto it = m_data.find(key);
@@ -220,26 +220,18 @@ QList<DataRecord *> Collection::getAllRecordsForDocument(const QString &key, qin
     }
 
     const std::string whereText = where.toStdString();
-    const bool hasWhere = whereRegex != nullptr || !whereText.empty();
+    const bool hasWhere = !whereText.empty();
     const std::string filterText = filter.toStdString();
-    const bool hasFilter = filterRegex != nullptr || !filterText.empty();
+    const bool hasFilter = !filterText.empty();
 
     for (int i = startIndex; i <= endIndex; ++i)
     {
         DataRecord *record = it->second[i].get();
-        if (whereRegex != nullptr && !whereRegex->match(QString::fromStdString(record->data)).hasMatch())
+        if (hasWhere && record->data.find(whereText) == std::string::npos)
         {
             continue;
         }
-        if (whereRegex == nullptr && hasWhere && record->data.find(whereText) == std::string::npos)
-        {
-            continue;
-        }
-        if (filterRegex != nullptr && filterRegex->match(QString::fromStdString(record->data)).hasMatch())
-        {
-            continue;
-        }
-        if (filterRegex == nullptr && hasFilter && record->data.find(filterText) != std::string::npos)
+        if (hasFilter && record->data.find(filterText) != std::string::npos)
         {
             continue;
         }
