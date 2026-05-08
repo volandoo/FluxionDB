@@ -208,13 +208,18 @@ void WebSocket::onNewConnection()
             << "ID" << socket->objectName() << "Scope" << scopeToString(entry->scope);
     connect(socket, &QWebSocket::textMessageReceived, this, &WebSocket::processMessage);
     connect(socket, &QWebSocket::disconnected, this, &WebSocket::socketDisconnected);
-    connect(socket, &QWebSocket::errorOccurred, this, [socket](QAbstractSocket::SocketError error) {
+    auto logSocketError = [socket](QAbstractSocket::SocketError error) {
         qWarning() << QTime::currentTime().toString() << "WebSocket error:"
                    << socket->peerAddress().toString()
                    << "ID" << socket->objectName()
                    << "Error" << static_cast<int>(error)
                    << "Text" << socket->errorString();
-    });
+    };
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    connect(socket, &QWebSocket::errorOccurred, this, logSocketError);
+#else
+    connect(socket, qOverload<QAbstractSocket::SocketError>(&QWebSocket::error), this, logSocketError);
+#endif
     m_clients << socket;
     m_connectionTimes[socket->objectName()] = QDateTime::currentMSecsSinceEpoch();
     m_clientMessageCounts[socket->objectName()] = 0;
