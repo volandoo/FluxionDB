@@ -420,6 +420,8 @@ class Client {
         ts: params.ts,
         doc: params.doc || "",
         from: params.from || 0,
+        where: params.where,
+        filter: params.filter,
       }),
     });
     return resp.records;

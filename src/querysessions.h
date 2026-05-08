@@ -8,6 +8,8 @@ struct QuerySessions {
     qint64 from;
     QString doc;
     QString col;
+    QString where;
+    QString filter;
     
     static QuerySessions fromJson(const QString& jsonString, bool* ok = nullptr);
     bool isValid() const;

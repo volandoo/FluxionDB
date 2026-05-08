@@ -66,12 +66,16 @@ client.delete_collection({"col": "temperature"})
 
 Retrieves the most recent record per document within a collection. The `doc` field accepts literal IDs or `/regex/flags` strings.
 
+Use `where` to keep only latest records whose `data` contains a plain string. Use `filter` to drop latest records whose `data` contains a plain string. When both are provided, records must match `where` and must not match `filter`.
+
 ```python
 latest = client.fetch_latest_records({
     "col": "temperature",
     "ts": int(time.time() * 1000),
     "doc": "/device-[12]/",
     "from": int(time.time() * 1000) - 3_600_000,
+    "where": "state:flying",
+    "filter": "quality:bad",
 })
 print(latest["device-1"]["data"])
 ```
@@ -102,7 +106,7 @@ client.insert_single_record({
 
 ## client.fetch_document(params)
 
-Fetches records for a specific document within a time range, with optional `limit`/`reverse`.
+Fetches records for a specific document within a time range, with optional `limit`/`reverse`. `where` keeps records whose `data` contains a plain string; `filter` drops records whose `data` contains a plain string.
 
 ```python
 history = client.fetch_document({
@@ -112,6 +116,8 @@ history = client.fetch_document({
     "to": ts,
     "limit": 100,
     "reverse": True,
+    "where": "state:flying",
+    "filter": "quality:bad",
 })
 ```
 

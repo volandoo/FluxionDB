@@ -10,12 +10,16 @@ public final class FetchLatestRecordsParams {
     private final long ts;
     private final String doc;
     private final Long from; // Optional
+    private final String where; // Optional
+    private final String filter; // Optional
 
     private FetchLatestRecordsParams(Builder builder) {
         this.col = Objects.requireNonNull(builder.col, "col cannot be null");
         this.ts = builder.ts;
         this.doc = builder.doc;
         this.from = builder.from;
+        this.where = builder.where;
+        this.filter = builder.filter;
     }
 
     public String getCol() {
@@ -34,6 +38,14 @@ public final class FetchLatestRecordsParams {
         return from;
     }
 
+    public String getWhere() {
+        return where;
+    }
+
+    public String getFilter() {
+        return filter;
+    }
+
     public static Builder builder() {
         return new Builder();
     }
@@ -43,6 +55,8 @@ public final class FetchLatestRecordsParams {
         private long ts;
         private String doc;
         private Long from;
+        private String where;
+        private String filter;
 
         public Builder col(String col) {
             this.col = col;
@@ -64,6 +78,16 @@ public final class FetchLatestRecordsParams {
             return this;
         }
 
+        public Builder where(String where) {
+            this.where = where;
+            return this;
+        }
+
+        public Builder filter(String filter) {
+            this.filter = filter;
+            return this;
+        }
+
         public FetchLatestRecordsParams build() {
             return new FetchLatestRecordsParams(this);
         }
@@ -76,6 +100,8 @@ public final class FetchLatestRecordsParams {
                 ", ts=" + ts +
                 ", doc='" + doc + '\'' +
                 ", from=" + from +
+                ", where='" + where + '\'' +
+                ", filter='" + filter + '\'' +
                 '}';
     }
 }

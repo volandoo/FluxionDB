@@ -68,10 +68,12 @@ func main() {
 
     // Fetch records for a document in a collection
     records, err := client.FetchDocument(fluxiondb.FetchRecordsParams{
-        Col:  "sensors",
-        Doc:  "device123",
-        From: now - 3600, // 1 hour ago
-        To:   now,
+        Col:    "sensors",
+        Doc:    "device123",
+        From:   now - 3600, // 1 hour ago
+        To:     now,
+        Where:  "state:flying", // optional: keep records containing this string
+        Filter: "quality:bad",  // optional: drop records containing this string
     })
     if err != nil {
         log.Printf("Failed to fetch records: %v", err)
@@ -83,10 +85,12 @@ func main() {
     // Fetch latest record per document using /regex/ filters
     from := now - 3600
     sessions, err := client.FetchLatestRecords(fluxiondb.FetchLatestRecordsParams{
-        Col:  "sensors",
-        TS:   now,
-        Doc:  "/device[0-9]+/",
-        From: &from,
+        Col:    "sensors",
+        TS:     now,
+        Doc:    "/device[0-9]+/",
+        From:   &from,
+        Where:  "state:flying",
+        Filter: "quality:bad",
     })
     if err != nil {
         log.Printf("Failed to fetch latest records: %v", err)
@@ -116,8 +120,8 @@ fmt.Printf("Env configs: %v\n", envConfigs)
 
 -   `InsertSingleDocumentRecord(record InsertMessageRequest) error` - Insert a single record into a document
 -   `InsertMultipleRecords(records []InsertMessageRequest) error` - Insert multiple records into a document
--   `FetchDocument(params FetchRecordsParams) ([]RecordResponse, error)` - Fetch records for a specific document
--   `FetchLatestRecords(params FetchLatestRecordsParams) (map[string]RecordResponse, error)` - Fetch the latest record per document in a collection
+-   `FetchDocument(params FetchRecordsParams) ([]RecordResponse, error)` - Fetch records for a specific document, optionally keeping records with `Where` and excluding records with `Filter`
+-   `FetchLatestRecords(params FetchLatestRecordsParams) (map[string]RecordResponse, error)` - Fetch the latest record per document in a collection, optionally keeping records with `Where` and excluding records with `Filter`
 -   `DeleteDocument(params DeleteDocumentParams) error` - Delete a document (optionally across collections)
 -   `DeleteDocumentRecord(params DeleteRecord) error` - Delete a single record within a document
 -   `DeleteMultipleRecords(params []DeleteRecord) error` - Delete multiple records within documents

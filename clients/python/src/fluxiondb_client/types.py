@@ -136,6 +136,8 @@ FetchLatestRecordsParamsOptional = TypedDict(
     {
         "doc": str,
         "from": int,
+        "where": str,
+        "filter": str,
     },
     total=False,
 )
@@ -161,6 +163,8 @@ FetchRecordsParamsRequired = TypedDict(
 class FetchRecordsParams(FetchRecordsParamsRequired, total=False):
     limit: int
     reverse: bool
+    where: str
+    filter: str
 
 
 DeleteCollectionParams = TypedDict(

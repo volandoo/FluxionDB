@@ -73,6 +73,8 @@ public class QuickStart {
         FetchLatestRecordsParams params = FetchLatestRecordsParams.builder()
             .col("readings")
             .ts(now + 1)
+            .where("temperature")
+            .filter("quality:bad")
             .build();
 
         var latest = client.fetchLatestRecords(params).get();
@@ -145,6 +147,8 @@ FetchLatestRecordsParams params = FetchLatestRecordsParams.builder()
     .col("readings")
     .ts(now)
     .doc("/sensor-.*/")  // Regex pattern
+    .where("state:flying")
+    .filter("quality:bad")
     .build();
 
 var records = client.fetchLatestRecords(params).get();

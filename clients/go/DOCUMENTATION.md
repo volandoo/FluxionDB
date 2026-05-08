@@ -102,12 +102,16 @@ if err := client.DeleteCollection(fluxiondb.DeleteCollectionParams{
 
 Retrieves the most recent record for every document in a collection, optionally scoping by document ID and minimum timestamp. The `Doc` field accepts either a literal document name or a `/regex/` string (e.g. `/device-.*/`) to match multiple documents server-side.
 
+Use `Where` to keep only latest records whose `Data` contains a plain string. Use `Filter` to drop latest records whose `Data` contains a plain string. When both are provided, records must match `Where` and must not match `Filter`.
+
 ```go
 latest, err := client.FetchLatestRecords(fluxiondb.FetchLatestRecordsParams{
 	Col: "temperature",
 	TS:  time.Now().UnixMilli(),
 	Doc: "device-a",               // optional
 	From: ptrInt64(time.Now().Add(-time.Hour).UnixMilli()), // optional helper returning *int64
+	Where: "state:flying",         // optional include predicate
+	Filter: "quality:bad",         // optional exclude predicate
 })
 if err != nil {
 	log.Fatalf("fetch latest: %v", err)
@@ -172,7 +176,7 @@ if err := client.InsertSingleDocumentRecord(fluxiondb.InsertMessageRequest{
 
 ## client.FetchDocument(params)
 
-Retrieves a document’s record history with explicit time filters (and optional `Limit`/`Reverse` pagination hints).
+Retrieves a document’s record history with explicit time filters (and optional `Limit`/`Reverse` pagination hints). `Where` keeps records whose `Data` contains a plain string; `Filter` drops records whose `Data` contains a plain string.
 
 ```go
 records, err := client.FetchDocument(fluxiondb.FetchRecordsParams{
@@ -181,6 +185,8 @@ records, err := client.FetchDocument(fluxiondb.FetchRecordsParams{
 	From:  time.Now().Add(-time.Hour).UnixMilli(),
 	To:    time.Now().UnixMilli(),
 	Limit: ptrInt(100),
+	Where: "state:flying",
+	Filter: "quality:bad",
 })
 if err != nil {
 	log.Fatalf("fetch document: %v", err)

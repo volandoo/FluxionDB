@@ -64,6 +64,63 @@ def test_insert_and_query_records(client: FluxionDBClient) -> None:
     print(f"[records] verified history for {col}/{doc}")
 
 
+def test_where_and_filter_predicates(client: FluxionDBClient) -> None:
+    col = _unique("sessions")
+    now = int(time.time())
+    client.insert_multiple_records(
+        [
+            {
+                "ts": now,
+                "doc": "session-a",
+                "data": "session_id:123 state:flying quality:ok",
+                "col": col,
+            },
+            {
+                "ts": now + 1,
+                "doc": "session-a",
+                "data": "session_id:123 state:landed quality:bad",
+                "col": col,
+            },
+            {
+                "ts": now,
+                "doc": "session-b",
+                "data": "session_id:999 state:flying quality:ok",
+                "col": col,
+            },
+            {
+                "ts": now,
+                "doc": "session-c",
+                "data": "session_id:123 state:flying quality:ok",
+                "col": col,
+            },
+        ]
+    )
+
+    latest = client.fetch_latest_records(
+        {
+            "col": col,
+            "ts": now + 10,
+            "where": "session_id:123",
+            "filter": "quality:bad",
+        }
+    )
+    assert sorted(latest.keys()) == ["session-c"]
+
+    history = client.fetch_document(
+        {
+            "col": col,
+            "doc": "session-a",
+            "from": now - 1,
+            "to": now + 10,
+            "where": "session_id:123",
+            "filter": "quality:bad",
+        }
+    )
+    assert history == [
+        {"ts": now, "data": "session_id:123 state:flying quality:ok"}
+    ]
+
+
 def test_key_value_round_trip(client: FluxionDBClient) -> None:
     col = _unique("config")
     key = _unique("key")

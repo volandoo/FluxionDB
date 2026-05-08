@@ -1,6 +1,8 @@
 package fluxiondb
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,6 +80,74 @@ func TestTypes(t *testing.T) {
 
 	if req.Col != "test-collection" {
 		t.Errorf("Expected Col to be 'test-collection', got '%s'", req.Col)
+	}
+}
+
+func TestFetchParamsJSONPredicates(t *testing.T) {
+	latest := FetchLatestRecordsParams{
+		Col:    "sessions",
+		TS:     123,
+		Where:  "session_id:123",
+		Filter: "quality:bad",
+	}
+	latestJSON, err := json.Marshal(latest)
+	if err != nil {
+		t.Fatalf("marshal latest params: %v", err)
+	}
+	latestPayload := string(latestJSON)
+	if !strings.Contains(latestPayload, `"where":"session_id:123"`) {
+		t.Fatalf("expected where in latest payload, got %s", latestPayload)
+	}
+	if !strings.Contains(latestPayload, `"filter":"quality:bad"`) {
+		t.Fatalf("expected filter in latest payload, got %s", latestPayload)
+	}
+
+	history := FetchRecordsParams{
+		Col:    "sessions",
+		Doc:    "session_a",
+		From:   0,
+		To:     999,
+		Where:  "state:flying",
+		Filter: "quality:bad",
+	}
+	historyJSON, err := json.Marshal(history)
+	if err != nil {
+		t.Fatalf("marshal history params: %v", err)
+	}
+	historyPayload := string(historyJSON)
+	if !strings.Contains(historyPayload, `"where":"state:flying"`) {
+		t.Fatalf("expected where in history payload, got %s", historyPayload)
+	}
+	if !strings.Contains(historyPayload, `"filter":"quality:bad"`) {
+		t.Fatalf("expected filter in history payload, got %s", historyPayload)
+	}
+}
+
+func TestFetchParamsJSONOmitsEmptyPredicates(t *testing.T) {
+	latestJSON, err := json.Marshal(FetchLatestRecordsParams{
+		Col: "sessions",
+		TS:  123,
+	})
+	if err != nil {
+		t.Fatalf("marshal latest params: %v", err)
+	}
+	latestPayload := string(latestJSON)
+	if strings.Contains(latestPayload, "where") || strings.Contains(latestPayload, "filter") {
+		t.Fatalf("expected empty predicates to be omitted, got %s", latestPayload)
+	}
+
+	historyJSON, err := json.Marshal(FetchRecordsParams{
+		Col:  "sessions",
+		Doc:  "session_a",
+		From: 0,
+		To:   999,
+	})
+	if err != nil {
+		t.Fatalf("marshal history params: %v", err)
+	}
+	historyPayload := string(historyJSON)
+	if strings.Contains(historyPayload, "where") || strings.Contains(historyPayload, "filter") {
+		t.Fatalf("expected empty predicates to be omitted, got %s", historyPayload)
 	}
 }
 

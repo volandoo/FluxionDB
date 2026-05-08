@@ -111,10 +111,12 @@ type CollectionParam struct {
 
 // FetchLatestRecordsParams represents parameters for fetching sessions
 type FetchLatestRecordsParams struct {
-	Col  string `json:"col"`
-	TS   int64  `json:"ts"`
-	Doc  string `json:"doc,omitempty"`
-	From *int64 `json:"from,omitempty"`
+	Col    string `json:"col"`
+	TS     int64  `json:"ts"`
+	Doc    string `json:"doc,omitempty"`
+	From   *int64 `json:"from,omitempty"`
+	Where  string `json:"where,omitempty"`
+	Filter string `json:"filter,omitempty"`
 }
 
 // DeleteCollectionParams represents parameters for deleting a collection
@@ -130,6 +132,8 @@ type FetchRecordsParams struct {
 	To      int64  `json:"to"`
 	Limit   *int   `json:"limit,omitempty"`
 	Reverse *bool  `json:"reverse,omitempty"`
+	Where   string `json:"where,omitempty"`
+	Filter  string `json:"filter,omitempty"`
 }
 
 // DeleteDocumentParams represents parameters for deleting a document

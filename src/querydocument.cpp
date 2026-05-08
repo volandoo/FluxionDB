@@ -30,6 +30,8 @@ QueryDocument QueryDocument::fromJson(const QString& jsonString, bool* ok)
     query.col = obj["col"].toString();
     query.limit = obj["limit"].toVariant().toLongLong();
     query.reverse = obj["reverse"].toVariant().toBool();
+    query.where = obj["where"].toString();
+    query.filter = obj["filter"].toString();
 
     if (ok) *ok = query.isValid();
     return query;

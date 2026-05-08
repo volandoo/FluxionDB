@@ -166,6 +166,10 @@ class FluxionDBClient:
             payload["doc"] = params["doc"]
         if "from" in params:
             payload["from"] = params["from"]
+        if "where" in params:
+            payload["where"] = params["where"]
+        if "filter" in params:
+            payload["filter"] = params["filter"]
         response = self._send_request(MESSAGE_TYPES["QUERY_RECORDS"], payload)
         typed = cast(QueryResponse, response)
         return typed.get("records", {})
@@ -196,6 +200,10 @@ class FluxionDBClient:
             payload["limit"] = params["limit"]
         if "reverse" in params:
             payload["reverse"] = params["reverse"]
+        if "where" in params:
+            payload["where"] = params["where"]
+        if "filter" in params:
+            payload["filter"] = params["filter"]
         response = self._send_request(MESSAGE_TYPES["QUERY_DOCUMENT"], payload)
         typed = cast(QueryCollectionResponse, response)
         return typed.get("records", [])

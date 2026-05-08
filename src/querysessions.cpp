@@ -28,6 +28,8 @@ QuerySessions QuerySessions::fromJson(const QString& jsonString, bool* ok)
     payload.from = obj["from"].toVariant().toLongLong();
     payload.doc = obj["doc"].toString();
     payload.col = obj["col"].toString();
+    payload.where = obj["where"].toString();
+    payload.filter = obj["filter"].toString();
 
 
     if (ok) *ok = payload.isValid();
