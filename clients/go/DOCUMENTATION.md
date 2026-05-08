@@ -102,7 +102,7 @@ if err := client.DeleteCollection(fluxiondb.DeleteCollectionParams{
 
 Retrieves the most recent record for every document in a collection, optionally scoping by document ID and minimum timestamp. The `Doc` field accepts either a literal document name or a `/regex/` string (e.g. `/device-.*/`) to match multiple documents server-side.
 
-Use `Where` to keep only latest records whose `Data` contains a plain string. Use `Filter` to drop latest records whose `Data` contains a plain string. When both are provided, records must match `Where` and must not match `Filter`.
+Use `Where` to keep only latest records whose `Data` matches a predicate. Use `Filter` to drop latest records whose `Data` matches a predicate. Predicates are plain substring matches by default, or regex matches when written as `/pattern/flags`.
 
 ```go
 latest, err := client.FetchLatestRecords(fluxiondb.FetchLatestRecordsParams{
@@ -110,8 +110,8 @@ latest, err := client.FetchLatestRecords(fluxiondb.FetchLatestRecordsParams{
 	TS:  time.Now().UnixMilli(),
 	Doc: "device-a",               // optional
 	From: ptrInt64(time.Now().Add(-time.Hour).UnixMilli()), // optional helper returning *int64
-	Where: "state:flying",         // optional include predicate
-	Filter: "quality:bad",         // optional exclude predicate
+	Where: "/state:(flying|landed)/", // optional substring or /regex/flags include predicate
+	Filter: "quality:bad",            // optional substring or /regex/flags exclude predicate
 })
 if err != nil {
 	log.Fatalf("fetch latest: %v", err)
@@ -176,7 +176,7 @@ if err := client.InsertSingleDocumentRecord(fluxiondb.InsertMessageRequest{
 
 ## client.FetchDocument(params)
 
-Retrieves a document’s record history with explicit time filters (and optional `Limit`/`Reverse` pagination hints). `Where` keeps records whose `Data` contains a plain string; `Filter` drops records whose `Data` contains a plain string.
+Retrieves a document’s record history with explicit time filters (and optional `Limit`/`Reverse` pagination hints). `Where` keeps records whose `Data` matches a predicate; `Filter` drops records whose `Data` matches a predicate. Predicates are plain substring matches by default, or regex matches when written as `/pattern/flags`.
 
 ```go
 records, err := client.FetchDocument(fluxiondb.FetchRecordsParams{

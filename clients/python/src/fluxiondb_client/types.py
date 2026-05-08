@@ -136,8 +136,8 @@ FetchLatestRecordsParamsOptional = TypedDict(
     {
         "doc": str,
         "from": int,
-        "where": str,
-        "filter": str,
+        "where": str,  # Optional substring or /regex/flags include predicate
+        "filter": str,  # Optional substring or /regex/flags exclude predicate
     },
     total=False,
 )
@@ -163,8 +163,8 @@ FetchRecordsParamsRequired = TypedDict(
 class FetchRecordsParams(FetchRecordsParamsRequired, total=False):
     limit: int
     reverse: bool
-    where: str
-    filter: str
+    where: str  # Optional substring or /regex/flags include predicate
+    filter: str  # Optional substring or /regex/flags exclude predicate
 
 
 DeleteCollectionParams = TypedDict(

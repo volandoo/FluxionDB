@@ -200,8 +200,8 @@ FetchLatestRecordsParams params = FetchLatestRecordsParams.builder()
     .col("sensors")
     .ts(now)
     .doc("/device-[0-9]+/")  // Regex pattern
-    .where("state:flying")   // Optional: keep records containing this string
-    .filter("quality:bad")   // Optional: drop records containing this string
+    .where("/state:(flying|landed)/") // Optional: substring or /regex/flags include predicate
+    .filter("quality:bad")            // Optional: substring or /regex/flags exclude predicate
     .build();
 
 Map<String, RecordResponse> records = client.fetchLatestRecords(params).get();

@@ -76,7 +76,7 @@ All requests are JSON documents. Clients authenticate during the WebSocket hands
 | `keys`    | Manage API keys (add/remove scoped keys)                       |
 | `conn`    | List active client connections (IP, elapsed ms, optional name) |
 
-The `doc` field in `qry` requests and the `key` field in `gvalues` requests both accept `/pattern/flags` strings (e.g. `/device-.*/i`). Literal values continue to work as before; the server only compiles the expression when the payload starts with `/` and contains a trailing `/`.
+The `doc` field in `qry` requests, the `key` field in `gvalues` requests, and `where`/`filter` data predicates accept `/pattern/flags` strings (e.g. `/device-.*/i`). Literal values continue to work as substring matches; the server only compiles the expression when the payload starts with `/` and contains a trailing `/`.
 
 Clients may also include an optional `name` query parameter during the WebSocket handshake (`?api-key=...&name=my-sdk`). The server echoes that label in `conn` responses so you can tell which socket is which.
 
@@ -139,12 +139,12 @@ await client.insertMultipleRecords([
 const collections = await client.fetchCollections();
 console.log(collections);
 
-// Match a subset of documents using /regex/ patterns
+// Match a subset of documents and record data using /regex/ patterns
 const latest = await client.fetchLatestRecords({
     col: "sensors",
     ts: now,
     doc: "/device-[12]/",
-    where: "state:flying",
+    where: "/state:(flying|landed)/",
     filter: "quality:bad",
 });
 console.log(latest);
@@ -154,7 +154,7 @@ const history = await client.fetchDocument({
     doc: "device-1",
     from: now - 3600,
     to: now,
-    where: "state:flying",
+    where: "/state:(flying|landed)/",
     filter: "quality:bad",
 });
 console.log(history);
@@ -299,7 +299,7 @@ FetchLatestRecordsParams params = FetchLatestRecordsParams.builder()
     .col("sensors")
     .ts(now)
     .doc("/device-[12]/")
-    .where("state:flying")
+    .where("/state:(flying|landed)/")
     .filter("quality:bad")
     .build();
 
