@@ -153,7 +153,7 @@ describe("FluxionDBClient initial connection retry", () => {
     expect(sockets.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("replays pending requests when the connection closes", async () => {
+  it("rejects sent pending requests when the connection closes", async () => {
     const sockets: MockWebSocket[] = [];
 
     class HangingWebSocket extends MockWebSocket {
@@ -181,19 +181,40 @@ describe("FluxionDBClient initial connection retry", () => {
 
     const request = client.fetchCollections();
     await waitFor(() => sockets[0].sentFrames.length === 1);
-    const sent = JSON.parse(sockets[0].sentFrames[0]);
     sockets[0].close(1006, "connection lost");
-    await waitFor(
-      () => sockets.length === 2 && sockets[1].sentFrames.length === 1,
-    );
 
-    const replayed = JSON.parse(sockets[1].sentFrames[0]);
-    expect(replayed).toEqual(sent);
-
-    sockets[1].emitMessage(
-      JSON.stringify({ id: replayed.id, collections: ["after-reconnect"] }),
+    await expect(request).rejects.toThrow(
+      "WebSocket connection closed before response was received",
     );
-    await expect(request).resolves.toEqual(["after-reconnect"]);
+    await waitFor(() => sockets.length === 2);
+    expect(sockets[1].sentFrames.length).toBe(0);
+  });
+
+  it("uses five reconnect attempts by default", async () => {
+    const sockets: MockWebSocket[] = [];
+
+    class AlwaysFailWebSocket extends MockWebSocket {
+      constructor(url: string) {
+        super(url);
+        sockets.push(this);
+        setTimeout(() => {
+          this.emitError("offline");
+          this.emitClose(1006, "offline");
+        }, 0);
+      }
+    }
+
+    // @ts-expect-error override for testing
+    globalThis.WebSocket = AlwaysFailWebSocket;
+
+    const client = new FluxionDBClient({
+      url: "ws://example",
+      apiKey: "key",
+      reconnectInterval: 1,
+    });
+
+    await expect(client.connect()).rejects.toThrow("offline");
+    expect(sockets.length).toBe(6);
   });
 
   it("sends a request queued during connection only once", async () => {

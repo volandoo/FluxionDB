@@ -98,7 +98,7 @@ class Client {
     apiKey,
     showLogs = false,
     connectionName,
-    maxReconnectAttempts = Number.POSITIVE_INFINITY,
+    maxReconnectAttempts = 5,
     reconnectInterval = 5000,
     connectTimeout = 10000,
     requestTimeout = 0,
@@ -286,6 +286,15 @@ class Client {
           return;
         }
 
+        if (this.manuallyClosed) {
+          return;
+        }
+
+        this.rejectRequestsSentOnSocket(
+          socket,
+          new Error("WebSocket connection closed before response was received."),
+        );
+
         if (this.shouldReconnect && !this.manuallyClosed) {
           this.scheduleReconnect();
         }
@@ -408,6 +417,19 @@ class Client {
   private resendPendingRequests(): void {
     for (const [id, request] of this.pendingRequests) {
       this.sendPendingRequest(id, request);
+    }
+  }
+
+  private rejectRequestsSentOnSocket(socket: WebSocket, error: Error): void {
+    for (const [id, request] of this.pendingRequests) {
+      if (request.sentSocket !== socket) {
+        continue;
+      }
+      if (request.timeout) {
+        clearTimeout(request.timeout);
+      }
+      request.reject(error);
+      this.pendingRequests.delete(id);
     }
   }
 
