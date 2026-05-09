@@ -26,8 +26,6 @@ import {
   ManageApiKeyParams,
 } from "./types";
 
-// Lazy load WebSocket implementation
-
 const MESSAGE_TYPES = {
   INSERT: "ins",
   QUERY_RECORDS: "qry",
@@ -49,8 +47,9 @@ const MESSAGE_TYPES = {
 } as const;
 
 type WebSocketResponse = {
-  id: string;
-  [key: string]: string;
+  id?: string;
+  error?: string;
+  [key: string]: unknown;
 };
 
 type WebSocketMessage = {
@@ -58,9 +57,12 @@ type WebSocketMessage = {
   data: string;
 };
 
-type InflightRequest = {
-  resolve: (response: any) => void;
+type PendingRequest<T = any> = {
+  frame: string;
+  resolve: (response: T) => void;
   reject: (error: Error) => void;
+  sentSocket?: WebSocket | null;
+  timeout?: ReturnType<typeof setTimeout>;
 };
 
 type ClientOptions = {
@@ -70,22 +72,26 @@ type ClientOptions = {
   connectionName?: string;
   maxReconnectAttempts?: number;
   reconnectInterval?: number;
+  connectTimeout?: number;
+  requestTimeout?: number;
 };
 
 class Client {
   private ws: WebSocket | null = null;
   private readonly url: string;
-  private inflightRequests: { [id: string]: InflightRequest; } = {};
-  private isConnecting: boolean = false; // Track if we're currently attempting to connect
-  private isReconnecting: boolean = false; // Flag to prevent concurrent reconnect attempts
-  private reconnectAttempts: number = 0;
+  private readonly apiKey: string;
   private readonly maxReconnectAttempts: number;
-  private readonly reconnectInterval: number; // milliseconds
-  private connectionPromise: Promise<void> | null = null; // Promise to track connection status
-  private apiKey: string;
-  private shouldReconnect: boolean = true; // Flag to track if reconnection should happen
-  private showLogs: boolean = false;
-  private connectionName?: string;
+  private readonly reconnectInterval: number;
+  private readonly connectTimeout: number;
+  private readonly requestTimeout: number;
+  private readonly showLogs: boolean;
+  private readonly connectionName?: string;
+  private pendingRequests = new Map<string, PendingRequest>();
+  private connectionPromise: Promise<void> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private shouldReconnect = true;
+  private manuallyClosed = false;
 
   constructor({
     url,
@@ -94,6 +100,8 @@ class Client {
     connectionName,
     maxReconnectAttempts = 5,
     reconnectInterval = 5000,
+    connectTimeout = 10000,
+    requestTimeout = 0,
   }: ClientOptions) {
     this.url = url;
     this.apiKey = apiKey;
@@ -101,197 +109,232 @@ class Client {
     this.connectionName = connectionName;
     this.maxReconnectAttempts = maxReconnectAttempts;
     this.reconnectInterval = reconnectInterval;
+    this.connectTimeout = connectTimeout;
+    this.requestTimeout = requestTimeout;
   }
 
   public async connect(): Promise<void> {
-    // Load WebSocket implementation first
-
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
       return;
     }
 
-    if (this.isConnecting) {
-      console.warn("WebSocket connection already in progress.");
-      return this.connectionPromise!; // Return existing promise
-    }
-
     if (this.connectionPromise) {
-      return this.connectionPromise; // Return existing promise
+      return this.connectionPromise;
     }
 
-    this.isConnecting = true;
-    this.connectionPromise = new Promise<void>((resolve, reject) => {
-      let isAuthenticated = false; // Track if we received the "ready" message from server
-      let hasSettled = false; // Track if the promise has resolved or rejected
-      let handledFailure = false; // Prevent handling the same failure twice (error + close)
+    this.manuallyClosed = false;
+    this.shouldReconnect = true;
+    this.clearReconnectTimer();
 
-      const handleInitialFailure = (errorMessage: string) => {
-        if (handledFailure) {
-          return;
-        }
-        handledFailure = true;
-        this.isConnecting = false;
+    const promise = this.connectWithRetry();
+    this.connectionPromise = promise;
+    try {
+      await promise;
+    } finally {
+      if (this.connectionPromise === promise) {
         this.connectionPromise = null;
-        this.ws = null;
-        this.cleanupOnClose();
+      }
+    }
+  }
 
-        if (this.reconnectAttempts < this.maxReconnectAttempts && this.shouldReconnect) {
-          const attempt = ++this.reconnectAttempts;
-          const delay = this.reconnectInterval * attempt;
-          if (this.showLogs) {
-            console.warn(
-              `Initial connection failed (${errorMessage}). Retrying in ${delay}ms... (${attempt}/${this.maxReconnectAttempts})`,
-            );
-          }
+  public close(): void {
+    this.manuallyClosed = true;
+    this.shouldReconnect = false;
+    this.clearReconnectTimer();
 
-          setTimeout(() => {
-            handledFailure = false; // Allow the next attempt to process its own failure
-            this.connect()
-              .then(resolve)
-              .catch(reject);
-          }, delay);
-        } else if (!hasSettled) {
-          hasSettled = true;
-          reject(new Error(errorMessage));
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+
+    this.connectionPromise = null;
+    this.rejectPendingRequests(new Error("WebSocket connection closed."));
+  }
+
+  private async connectWithRetry(): Promise<void> {
+    let failures = 0;
+
+    while (!this.manuallyClosed) {
+      try {
+        await this.openSocket();
+        this.reconnectAttempts = 0;
+        this.resendPendingRequests();
+        return;
+      } catch (error) {
+        if (this.manuallyClosed) {
+          throw error;
+        }
+
+        if (failures >= this.maxReconnectAttempts) {
+          throw error;
+        }
+
+        failures += 1;
+        this.reconnectAttempts = failures;
+        const delay = this.reconnectInterval * failures;
+        if (this.showLogs) {
+          console.warn(
+            `WebSocket connection failed: ${(error as Error).message}. Retrying in ${delay}ms... (${failures}/${this.maxReconnectAttempts})`,
+          );
+        }
+        await this.delay(delay);
+      }
+    }
+
+    throw new Error("WebSocket connection closed.");
+  }
+
+  private openSocket(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let ready = false;
+      let connectTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const socket = new WebSocket(this.buildUrl());
+      this.ws = socket;
+
+      const cleanup = () => {
+        if (connectTimer) {
+          clearTimeout(connectTimer);
+          connectTimer = undefined;
         }
       };
 
-      try {
-        // Append API key as query parameter instead of header
-        // (Qt 6.4 doesn't support reading custom headers from handshake)
-        const params = new URLSearchParams();
-        params.set("api-key", this.apiKey);
-        if (this.connectionName && this.connectionName.length > 0) {
-          params.set("name", this.connectionName);
+      const fail = (error: Error) => {
+        if (settled) {
+          return;
         }
-        const urlWithKey = `${this.url}${this.url.includes("?") ? "&" : "?"}${params.toString()}`;
-        if (this.showLogs) {
-          console.log("Connecting to:", urlWithKey);
+        settled = true;
+        cleanup();
+        if (this.ws === socket) {
+          this.ws = null;
         }
-        this.ws = new WebSocket(urlWithKey);
-        if (this.showLogs) {
-          console.log("WebSocket created, readyState:", this.ws);
+        try {
+          socket.close();
+        } catch {
+          // Ignore close failures while handling a failed connection attempt.
         }
-      } catch (error) {
-        this.isConnecting = false;
-        this.connectionPromise = null;
-        reject(error as Error);
-        return;
-      }
+        reject(error);
+      };
 
-      // Handle open event - don't resolve yet, wait for "ready" message
-      const onOpen = () => {
+      const succeed = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve();
+      };
+
+      connectTimer = setTimeout(() => {
+        fail(
+          new Error(`WebSocket ready timeout after ${this.connectTimeout}ms.`),
+        );
+      }, this.connectTimeout);
+
+      socket.addEventListener("open", () => {
         if (this.showLogs) {
           console.log("WebSocket connected, awaiting authentication...");
         }
-        // Don't resolve here - wait for server to send "ready" message
-      };
+      });
 
-      // Handle message event
-      const onMessage = (event: MessageEvent) => {
-        try {
-          const payload = event.data as string;
+      socket.addEventListener("message", (event: MessageEvent) => {
+        if (this.ws !== socket) {
+          return;
+        }
 
-          if (payload !== null) {
-            // Check if this is the "ready" message from server during authentication
-            if (!isAuthenticated && this.isConnecting) {
+        const payload = event.data as string;
+        if (!ready) {
+          try {
+            const message = JSON.parse(payload);
+            if (message.type === "ready") {
+              ready = true;
               if (this.showLogs) {
-                console.log(
-                  "Received message during authentication:",
-                  payload.substring(0, 100),
-                );
+                console.log("Authentication successful");
               }
-              try {
-                const msg = JSON.parse(payload);
-                if (this.showLogs) {
-                  console.log("Parsed message type:", msg.type);
-                }
-                if (msg.type === "ready") {
-                  if (this.showLogs) {
-                    console.log("Authentication successful");
-                  }
-                  isAuthenticated = true;
-                  hasSettled = true;
-                  this.isConnecting = false;
-                  this.reconnectAttempts = 0;
-                  this.isReconnecting = false;
-                  this.shouldReconnect = true;
-                  resolve();
-                  return; // Don't pass ready message to handleMessage
-                }
-              } catch (e) {
-                if (this.showLogs) {
-                  console.log("Failed to parse message during auth:", e);
-                }
-                // Not JSON or not ready message, handle normally
-              }
+              succeed();
+              return;
             }
-            this.handleMessage(payload);
+          } catch (error) {
+            fail(error as Error);
+            return;
           }
+        }
+
+        try {
+          this.handleMessage(payload);
         } catch (error) {
           console.error("Error parsing WebSocket message:", error);
         }
-      };
+      });
 
-      // Handle close event
-      const onClose = (event: CloseEvent) => {
-        const code = event.code;
-        const reason = event.reason ? String(event.reason) : "";
-        const reasonText = reason || "no reason";
+      socket.addEventListener("close", (event: CloseEvent) => {
+        if (this.ws !== socket) {
+          return;
+        }
+
+        const reason = event.reason
+          ? String(event.reason)
+          : `code ${event.code}`;
         if (this.showLogs) {
-          console.log("WebSocket disconnected:", code, reasonText);
+          console.log("WebSocket disconnected:", event.code, reason);
         }
-        this.isConnecting = false;
-        this.connectionPromise = null; // Clear the promise on close/error
         this.ws = null;
-        this.cleanupOnClose();
 
-        // If closed before authentication, it's an auth failure
-        if (!isAuthenticated) {
-          handleInitialFailure(reasonText || `code ${code}`);
-        } else if (this.shouldReconnect) {
-          this.reconnect();
+        if (!ready) {
+          fail(new Error(reason));
+          return;
         }
-      };
 
-      // Handle error event
-      const onError = (error: any) => {
-        const errorMessage =
+        if (this.manuallyClosed) {
+          return;
+        }
+
+        this.rejectRequestsSentOnSocket(
+          socket,
+          new Error("WebSocket connection closed before response was received."),
+        );
+
+        if (this.shouldReconnect && !this.manuallyClosed) {
+          this.scheduleReconnect();
+        }
+      });
+
+      socket.addEventListener("error", (error: any) => {
+        if (this.ws !== socket) {
+          return;
+        }
+
+        const message =
           (error && (error.message || error.toString?.())) ||
           "WebSocket connection error";
-        console.error("WebSocket error:", errorMessage, error);
-        if (!isAuthenticated) {
-          handleInitialFailure(errorMessage);
-        } else if (this.shouldReconnect) {
-          this.isConnecting = false;
-          this.connectionPromise = null; // Clear the promise on close/error
-          this.ws = null;
-          this.cleanupOnClose();
-          this.reconnect(); // Treat errors like a close event and attempt reconnect
+        if (!ready) {
+          fail(new Error(message));
+        } else {
+          console.error("WebSocket error:", message, error);
         }
-      };
-
-      // Attach event listeners based on environment
-      if (!this.ws) {
-        reject(new Error("Failed to create WebSocket"));
-        return;
-      }
-
-      this.ws.addEventListener("open", onOpen);
-      this.ws.addEventListener("message", onMessage);
-      this.ws.addEventListener("close", onClose);
-      this.ws.addEventListener("error", onError);
+      });
     });
-
-    return this.connectionPromise;
   }
 
   private handleMessage(payload: string): void {
     const response: WebSocketResponse = JSON.parse(payload);
-    const request = this.inflightRequests[response.id];
+    if (!response.id) {
+      if (response.error) {
+        console.warn(`Received error response: ${response.error}`);
+      } else {
+        console.warn("Received message without id:", response);
+      }
+      return;
+    }
+
+    const request = this.pendingRequests.get(response.id);
     if (request) {
+      if (request.timeout) {
+        clearTimeout(request.timeout);
+      }
       request.resolve(response);
-      delete this.inflightRequests[response.id];
+      this.pendingRequests.delete(response.id);
     } else if (response.error) {
       console.warn(`Received error response: ${response.error}`);
     } else {
@@ -302,99 +345,160 @@ class Client {
     }
   }
 
-  private cleanupOnClose(): void {
-    // Clean up inflight requests
-    for (const id in this.inflightRequests) {
-      if (this.inflightRequests.hasOwnProperty(id)) {
-        const request = this.inflightRequests[id];
-        if (!request) {
-          continue;
-        }
-        const error = new Error(`Request ${id} timed out due to disconnection.`);
-        console.warn(error.message);
-        request.reject(error);
-        delete this.inflightRequests[id];
+  private async send<T>(data: WebSocketMessage): Promise<T> {
+    const messageId = this.generateId();
+    const frame = JSON.stringify({
+      id: messageId,
+      type: data.type,
+      data: data.data,
+    });
+
+    return new Promise((resolve, reject) => {
+      const pending: PendingRequest<T> = {
+        frame,
+        resolve,
+        reject,
+      };
+
+      if (this.requestTimeout > 0) {
+        pending.timeout = setTimeout(() => {
+          this.pendingRequests.delete(messageId);
+          reject(
+            new Error(
+              `Request ${messageId} timed out after ${this.requestTimeout}ms.`,
+            ),
+          );
+        }, this.requestTimeout);
       }
-    }
+
+      this.pendingRequests.set(messageId, pending);
+      this.connect()
+        .then(() => this.sendPendingRequest(messageId, pending))
+        .catch((error) => {
+          if (pending.timeout) {
+            clearTimeout(pending.timeout);
+          }
+          this.pendingRequests.delete(messageId);
+          reject(
+            new Error(
+              "Failed to connect before sending: " + (error as Error).message,
+            ),
+          );
+        });
+    });
   }
 
-  private async send<T>(data: WebSocketMessage): Promise<T> {
-    try {
-      await this.connect();
-    } catch (error) {
-      return Promise.reject(
-        new Error(
-          "Failed to connect before sending: " + (error as Error).message,
-        ),
-      ); // Reject send if connect fails.
+  private sendPendingRequest(id: string, request: PendingRequest): void {
+    if (!this.pendingRequests.has(id)) {
+      return;
     }
 
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error("WebSocket not connected."));
+      this.scheduleReconnect();
+      return;
     }
 
-    const messageId = this.generateId();
+    if (request.sentSocket === this.ws) {
+      return;
+    }
 
-    return new Promise((resolve, reject) => {
-      this.inflightRequests[messageId] = {
-        resolve: (response: T) => {
-          resolve(response);
-        },
-        reject,
-      };
-      try {
-        this.ws!.send(
-          JSON.stringify({
-            id: messageId,
-            type: data.type,
-            data: data.data,
-          }),
-        );
-      } catch (error) {
-        delete this.inflightRequests[messageId]; // Clean up if send fails
-        console.error("Error sending message:", error);
-        reject(error);
+    try {
+      this.ws.send(request.frame);
+      request.sentSocket = this.ws;
+    } catch (error) {
+      if (this.showLogs) {
+        console.warn("Error sending WebSocket message:", error);
       }
+      this.ws = null;
+      this.scheduleReconnect();
+    }
+  }
+
+  private resendPendingRequests(): void {
+    for (const [id, request] of this.pendingRequests) {
+      this.sendPendingRequest(id, request);
+    }
+  }
+
+  private rejectRequestsSentOnSocket(socket: WebSocket, error: Error): void {
+    for (const [id, request] of this.pendingRequests) {
+      if (request.sentSocket !== socket) {
+        continue;
+      }
+      if (request.timeout) {
+        clearTimeout(request.timeout);
+      }
+      request.reject(error);
+      this.pendingRequests.delete(id);
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.shouldReconnect || this.manuallyClosed || this.reconnectTimer) {
+      return;
+    }
+
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.rejectPendingRequests(
+        new Error("WebSocket reconnect attempts exhausted."),
+      );
+      return;
+    }
+
+    this.reconnectAttempts += 1;
+    const delay = this.reconnectInterval * this.reconnectAttempts;
+    if (this.showLogs) {
+      console.warn(
+        `Attempting to reconnect... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`,
+      );
+    }
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect().catch((error) => {
+        if (this.showLogs) {
+          console.warn("Reconnect failed:", error);
+        }
+        this.scheduleReconnect();
+      });
+    }, delay);
+  }
+
+  private rejectPendingRequests(error: Error): void {
+    for (const [id, request] of this.pendingRequests) {
+      if (request.timeout) {
+        clearTimeout(request.timeout);
+      }
+      request.reject(error);
+      this.pendingRequests.delete(id);
+    }
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  private buildUrl(): string {
+    const params = new URLSearchParams();
+    params.set("api-key", this.apiKey);
+    if (this.connectionName && this.connectionName.length > 0) {
+      params.set("name", this.connectionName);
+    }
+    const separator = this.url.includes("?") ? "&" : "?";
+    return `${this.url}${separator}${params.toString()}`;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms);
     });
   }
 
   private generateId(): string {
     return Math.random().toString(36).substring(2, 15);
-  }
-
-  public close(): void {
-    this.shouldReconnect = false; // Prevent automatic reconnection
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-    this.cleanupOnClose();
-    if (this.connectionPromise) {
-      // If the connection promise exists, we'll reject it.
-      this.connectionPromise = null;
-    }
-  }
-
-  private reconnect(): void {
-    if (
-      this.isReconnecting ||
-      this.reconnectAttempts >= this.maxReconnectAttempts
-    ) {
-      return; // Prevent concurrent reconnects and stop if max attempts reached
-    }
-
-    this.isReconnecting = true;
-    this.reconnectAttempts++;
-
-    if (this.reconnectAttempts > 1) {
-      console.warn(
-        `Attempting to reconnect... (Attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`,
-      );
-    }
-    setTimeout(() => {
-      this.connect();
-      this.isReconnecting = false;
-    }, this.reconnectInterval);
   }
 
   public async fetchCollections() {

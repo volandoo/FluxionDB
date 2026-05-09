@@ -19,6 +19,7 @@ class MockWebSocket {
   };
 
   constructor(public readonly url: string) {}
+  public readonly sentFrames: string[] = [];
 
   public addEventListener(type: keyof typeof this.listeners, listener: any) {
     this.listeners[type].push(listener);
@@ -28,8 +29,8 @@ class MockWebSocket {
     this.listeners[type] = this.listeners[type].filter((l) => l !== listener);
   }
 
-  public send(_: string) {
-    // no-op for tests
+  public send(frame: string) {
+    this.sentFrames.push(frame);
   }
 
   public close(code = 1000, reason = "") {
@@ -37,20 +38,20 @@ class MockWebSocket {
     this.dispatch("close", { code, reason });
   }
 
-  protected emitOpen() {
+  public emitOpen() {
     this.readyState = MockWebSocket.OPEN;
     this.dispatch("open", {});
   }
 
-  protected emitMessage(data: any) {
+  public emitMessage(data: any) {
     this.dispatch("message", { data });
   }
 
-  protected emitError(message: string) {
+  public emitError(message: string) {
     this.dispatch("error", { message });
   }
 
-  protected emitClose(code: number, reason: string) {
+  public emitClose(code: number, reason: string) {
     this.readyState = MockWebSocket.CLOSED;
     this.dispatch("close", { code, reason });
   }
@@ -67,6 +68,16 @@ const originalWebSocket = globalThis.WebSocket;
 afterEach(() => {
   globalThis.WebSocket = originalWebSocket;
 });
+
+const waitFor = async (predicate: () => boolean) => {
+  for (let i = 0; i < 20; i++) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("condition was not met");
+};
 
 describe("FluxionDBClient initial connection retry", () => {
   it("retries initial failures and resolves when a later attempt succeeds", async () => {
@@ -142,7 +153,7 @@ describe("FluxionDBClient initial connection retry", () => {
     expect(sockets.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("rejects pending requests when the connection closes", async () => {
+  it("rejects sent pending requests when the connection closes", async () => {
     const sockets: MockWebSocket[] = [];
 
     class HangingWebSocket extends MockWebSocket {
@@ -162,24 +173,115 @@ describe("FluxionDBClient initial connection retry", () => {
     const client = new FluxionDBClient({
       url: "ws://example",
       apiKey: "key",
-      maxReconnectAttempts: 0,
+      maxReconnectAttempts: 2,
       reconnectInterval: 5,
     });
 
     await client.connect();
 
     const request = client.fetchCollections();
-    await Promise.resolve();
+    await waitFor(() => sockets[0].sentFrames.length === 1);
     sockets[0].close(1006, "connection lost");
 
-    let caughtError: Error | null = null;
-    try {
-      await request;
-    } catch (error) {
-      caughtError = error as Error;
+    await expect(request).rejects.toThrow(
+      "WebSocket connection closed before response was received",
+    );
+    await waitFor(() => sockets.length === 2);
+    expect(sockets[1].sentFrames.length).toBe(0);
+  });
+
+  it("uses five reconnect attempts by default", async () => {
+    const sockets: MockWebSocket[] = [];
+
+    class AlwaysFailWebSocket extends MockWebSocket {
+      constructor(url: string) {
+        super(url);
+        sockets.push(this);
+        setTimeout(() => {
+          this.emitError("offline");
+          this.emitClose(1006, "offline");
+        }, 0);
+      }
     }
 
-    expect(caughtError).not.toBeNull();
-    expect(caughtError?.message).toContain("timed out due to disconnection");
+    // @ts-expect-error override for testing
+    globalThis.WebSocket = AlwaysFailWebSocket;
+
+    const client = new FluxionDBClient({
+      url: "ws://example",
+      apiKey: "key",
+      reconnectInterval: 1,
+    });
+
+    await expect(client.connect()).rejects.toThrow("offline");
+    expect(sockets.length).toBe(6);
+  });
+
+  it("sends a request queued during connection only once", async () => {
+    const sockets: MockWebSocket[] = [];
+
+    class SlowReadyWebSocket extends MockWebSocket {
+      constructor(url: string) {
+        super(url);
+        sockets.push(this);
+        setTimeout(() => {
+          this.emitOpen();
+          this.emitMessage(JSON.stringify({ type: "ready" }));
+        }, 10);
+      }
+    }
+
+    // @ts-expect-error override for testing
+    globalThis.WebSocket = SlowReadyWebSocket;
+
+    const client = new FluxionDBClient({
+      url: "ws://example",
+      apiKey: "key",
+      reconnectInterval: 5,
+    });
+
+    const request = client.fetchCollections();
+    await waitFor(
+      () => sockets.length === 1 && sockets[0].sentFrames.length === 1,
+    );
+    expect(sockets[0].sentFrames.length).toBe(1);
+
+    const sent = JSON.parse(sockets[0].sentFrames[0]);
+    sockets[0].emitMessage(
+      JSON.stringify({ id: sent.id, collections: ["ok"] }),
+    );
+    await expect(request).resolves.toEqual(["ok"]);
+  });
+
+  it("rejects pending requests when the client is closed manually", async () => {
+    const sockets: MockWebSocket[] = [];
+
+    class HangingWebSocket extends MockWebSocket {
+      constructor(url: string) {
+        super(url);
+        sockets.push(this);
+        setTimeout(() => {
+          this.emitOpen();
+          this.emitMessage(JSON.stringify({ type: "ready" }));
+        }, 0);
+      }
+    }
+
+    // @ts-expect-error override for testing
+    globalThis.WebSocket = HangingWebSocket;
+
+    const client = new FluxionDBClient({
+      url: "ws://example",
+      apiKey: "key",
+      reconnectInterval: 5,
+    });
+
+    await client.connect();
+
+    const request = client.fetchCollections();
+    await waitFor(() => sockets[0].sentFrames.length === 1);
+    client.close();
+
+    await expect(request).rejects.toThrow("WebSocket connection closed");
   });
 });
