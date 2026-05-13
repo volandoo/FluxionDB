@@ -1322,15 +1322,27 @@ void WebSocket::socketDisconnected()
         const auto messageCountIt = m_clientMessageCounts.find(clientId);
         const quint64 messageCount = messageCountIt == m_clientMessageCounts.end() ? 0 : messageCountIt->second;
 
-        qInfo() << QTime::currentTime().toString() << "Client disconnected:" 
-                 << client->peerAddress().toString()
-                 << "ID" << clientId
-                 << "CloseCode" << client->closeCode()
-                 << "CloseReason" << client->closeReason()
-                 << "SocketError" << client->error()
-                 << "ErrorText" << client->errorString()
-                 << "LifetimeMs" << lifetimeMs
-                 << "Messages" << messageCount;
+        const QWebSocketProtocol::CloseCode closeCode = client->closeCode();
+        const bool cleanClose = closeCode == QWebSocketProtocol::CloseCodeNormal;
+        if (cleanClose) {
+            qInfo() << QTime::currentTime().toString() << "Client disconnected:"
+                     << client->peerAddress().toString()
+                     << "ID" << clientId
+                     << "CloseCode" << closeCode
+                     << "CloseReason" << client->closeReason()
+                     << "LifetimeMs" << lifetimeMs
+                     << "Messages" << messageCount;
+        } else {
+            qWarning() << QTime::currentTime().toString() << "Client disconnected unexpectedly:"
+                       << client->peerAddress().toString()
+                       << "ID" << clientId
+                       << "CloseCode" << closeCode
+                       << "CloseReason" << client->closeReason()
+                       << "SocketError" << client->error()
+                       << "ErrorText" << client->errorString()
+                       << "LifetimeMs" << lifetimeMs
+                       << "Messages" << messageCount;
+        }
         m_clientScopes.erase(clientId);
         m_clientKeys.erase(clientId);
         m_clientNames.erase(clientId);
