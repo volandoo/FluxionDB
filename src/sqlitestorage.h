@@ -55,6 +55,7 @@ public:
     bool beginTransaction();
     bool commitTransaction();
     void rollbackTransaction();
+    bool checkpointWal(bool truncate);
 
 private:
     bool ensureSchema();

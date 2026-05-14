@@ -70,6 +70,7 @@ void SqliteStorage::shutdown()
 
     if (m_db.isValid())
     {
+        checkpointWal(true);
         m_db.close();
     }
 
@@ -381,6 +382,8 @@ bool SqliteStorage::ensureSchema()
     pragma.exec(QStringLiteral("PRAGMA foreign_keys = ON;"));
     pragma.exec(QStringLiteral("PRAGMA journal_mode = WAL;"));
     pragma.exec(QStringLiteral("PRAGMA synchronous = NORMAL;"));
+    pragma.exec(QStringLiteral("PRAGMA wal_autocheckpoint = 4096;"));
+    pragma.exec(QStringLiteral("PRAGMA journal_size_limit = 67108864;"));
 
     QSqlQuery query(m_db);
     if (!query.exec(QStringLiteral(
@@ -486,4 +489,32 @@ void SqliteStorage::rollbackTransaction()
     {
         qWarning() << "Failed to rollback SQLite transaction:" << m_db.lastError().text();
     }
+}
+
+bool SqliteStorage::checkpointWal(bool truncate)
+{
+    if (!m_isOpen)
+    {
+        return false;
+    }
+
+    QSqlQuery query(m_db);
+    const QString mode = truncate ? QStringLiteral("TRUNCATE") : QStringLiteral("PASSIVE");
+    if (!query.exec(QStringLiteral("PRAGMA wal_checkpoint(%1);").arg(mode)))
+    {
+        logError(query, QStringLiteral("Failed to checkpoint SQLite WAL"));
+        return false;
+    }
+
+    if (query.next())
+    {
+        const int busy = query.value(0).toInt();
+        if (busy != 0)
+        {
+            qWarning() << "SQLite WAL checkpoint could not complete because the database is busy";
+            return false;
+        }
+    }
+
+    return true;
 }
