@@ -20,7 +20,7 @@ public:
     void insert(qint64 timestamp, const QString& key, const QString& data);
     DataRecord* getLatestRecordForDocument(const QString& key, qint64 timestamp);
     DataRecord* getEarliestRecordForDocument(const QString& key, qint64 timestamp);
-    QHash<QString, DataRecord*> getAllRecords(qint64 timestamp, const QString& key, qint64 from = 0, const QRegularExpression* keyRegex = nullptr);
+    QHash<QString, DataRecord*> getAllRecords(qint64 timestamp, const QString& key, qint64 from = 0, const QRegularExpression* keyRegex = nullptr, const QString& where = QString(), const QString& filter = QString(), const QRegularExpression* whereRegex = nullptr, const QRegularExpression* filterRegex = nullptr);
     QList<DataRecord*> getAllRecordsForDocument(const QString& key, qint64 from, qint64 to, bool reverse = false, qint64 limit = 0, const QString& where = QString(), const QString& filter = QString(), const QRegularExpression* whereRegex = nullptr, const QRegularExpression* filterRegex = nullptr);
     QHash<QString, QList<DataRecord*>> getSessionData(qint64 from, qint64 to);
     
