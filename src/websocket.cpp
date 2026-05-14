@@ -13,6 +13,7 @@
 #include <QUrlQuery>
 #include <QWebSocketProtocol>
 #include <QRegularExpression>
+#include <cstdio>
 #include "insertrequest.h"
 #include "querysessions.h"
 #include "querydocument.h"
@@ -412,6 +413,34 @@ QString WebSocket::handleInsert(QWebSocket *client, const MessageRequest &messag
     return doc.toJson(QJsonDocument::Compact);
 }
 
+namespace {
+
+void appendInt64(QByteArray &out, qint64 value)
+{
+    char buf[32];
+    const int len = std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(value));
+    out.append(buf, len);
+}
+
+void appendJsonString(QByteArray &out, const QString &s)
+{
+    const QByteArray utf8 = s.toUtf8();
+    out.append('"');
+    appendJsonEscapedUtf8(out, utf8.constData(), utf8.size());
+    out.append('"');
+}
+
+void appendRecordAsJson(QByteArray &out, const DataRecord *record)
+{
+    out.append("{\"ts\":", 6);
+    appendInt64(out, record->timestamp);
+    out.append(",\"data\":\"", 9);
+    appendJsonEscapedUtf8(out, record->data.data(), static_cast<qsizetype>(record->data.size()));
+    out.append("\"}", 2);
+}
+
+}
+
 QString WebSocket::handleQuerySessions(QWebSocket *client, const MessageRequest &message)
 {
     bool ok;
@@ -424,50 +453,66 @@ QString WebSocket::handleQuerySessions(QWebSocket *client, const MessageRequest 
         return "";
     }
     auto database = m_databases[query.col].get();
-    QJsonObject dataObj;
-    QJsonObject obj;
-    obj["id"] = message.id;
+
+    QByteArray response;
+    response.append("{\"id\":", 6);
+    appendJsonString(response, message.id);
+    response.append(",\"records\":", 11);
+
     if (database == nullptr)
     {
-        m_databases.erase(query.col);   
-        obj["records"] = QJsonObject();
-        QJsonDocument doc(obj);
-        return doc.toJson(QJsonDocument::Compact);
+        m_databases.erase(query.col);
+        response.append("{}", 2);
     }
-    QRegularExpression docRegex;
-    const bool useRegex = tryParseRegexPattern(query.doc, &docRegex);
-    QRegularExpression whereRegex;
-    const bool useWhereRegex = tryParseRegexPattern(query.where, &whereRegex);
-    QRegularExpression filterRegex;
-    const bool useFilterRegex = tryParseRegexPattern(query.filter, &filterRegex);
-    auto records = database->getAllRecords(query.ts, useRegex ? QString() : query.doc, query.from, useRegex ? &docRegex : nullptr, useWhereRegex ? QString() : query.where, useFilterRegex ? QString() : query.filter, useWhereRegex ? &whereRegex : nullptr, useFilterRegex ? &filterRegex : nullptr);
-
-    for (auto it = records.constBegin(); it != records.constEnd(); ++it)
+    else
     {
-        dataObj[it.key()] = it.value()->toJson();
+        QRegularExpression docRegex;
+        const bool useRegex = tryParseRegexPattern(query.doc, &docRegex);
+        QRegularExpression whereRegex;
+        const bool useWhereRegex = tryParseRegexPattern(query.where, &whereRegex);
+        QRegularExpression filterRegex;
+        const bool useFilterRegex = tryParseRegexPattern(query.filter, &filterRegex);
+        auto records = database->getAllRecords(query.ts, useRegex ? QString() : query.doc, query.from, useRegex ? &docRegex : nullptr, useWhereRegex ? QString() : query.where, useFilterRegex ? QString() : query.filter, useWhereRegex ? &whereRegex : nullptr, useFilterRegex ? &filterRegex : nullptr);
+
+        response.append('{');
+        bool first = true;
+        for (auto it = records.constBegin(); it != records.constEnd(); ++it)
+        {
+            if (!first)
+            {
+                response.append(',');
+            }
+            first = false;
+            appendJsonString(response, it.key());
+            response.append(':');
+            appendRecordAsJson(response, it.value());
+        }
+        response.append('}');
     }
-
-    obj["records"] = dataObj;
-
-    QJsonDocument doc(obj);
-    auto resp = doc.toJson(QJsonDocument::Compact);
-    return resp;
+    response.append('}');
+    return QString::fromUtf8(response);
 }
 
 QString WebSocket::handleQueryCollections(QWebSocket *client, const MessageRequest &message)
 {
-    QJsonObject obj;
-    obj["id"] = message.id;
-
-    QJsonArray recordsArray;
-    for( auto &[key, value] : m_databases)
+    Q_UNUSED(client);
+    QByteArray response;
+    response.append("{\"id\":", 6);
+    appendJsonString(response, message.id);
+    response.append(",\"collections\":[", 16);
+    bool first = true;
+    for (const auto &[key, value] : m_databases)
     {
-        recordsArray.append(key);
+        Q_UNUSED(value);
+        if (!first)
+        {
+            response.append(',');
+        }
+        first = false;
+        appendJsonString(response, key);
     }
-    obj["collections"] = recordsArray;
-    QJsonDocument doc(obj);
-    return doc.toJson(QJsonDocument::Compact);
-
+    response.append("]}", 2);
+    return QString::fromUtf8(response);
 }
 
 QString WebSocket::handleQueryDocument(QWebSocket *client, const MessageRequest &message)
@@ -482,32 +527,38 @@ QString WebSocket::handleQueryDocument(QWebSocket *client, const MessageRequest 
         return "";
     }
 
-    QJsonObject dataObj;
     auto database = m_databases[queryDocument.col].get();
-    QJsonArray recordsArray;
 
-    dataObj["id"] = message.id;
+    QByteArray response;
+    response.append("{\"id\":", 6);
+    appendJsonString(response, message.id);
+    response.append(",\"records\":[", 12);
+
     if (database == nullptr)
     {
-        m_databases.erase(queryDocument.col);   
-        dataObj["records"] = recordsArray;
-        QJsonDocument doc(dataObj);
-        return doc.toJson(QJsonDocument::Compact);
+        m_databases.erase(queryDocument.col);
     }
-    QRegularExpression whereRegex;
-    const bool useWhereRegex = tryParseRegexPattern(queryDocument.where, &whereRegex);
-    QRegularExpression filterRegex;
-    const bool useFilterRegex = tryParseRegexPattern(queryDocument.filter, &filterRegex);
-    auto records = database->getAllRecordsForDocument(queryDocument.doc, queryDocument.from, queryDocument.to, queryDocument.reverse, queryDocument.limit, useWhereRegex ? QString() : queryDocument.where, useFilterRegex ? QString() : queryDocument.filter, useWhereRegex ? &whereRegex : nullptr, useFilterRegex ? &filterRegex : nullptr);
-
-    foreach (const DataRecord *record, records)
+    else
     {
-        recordsArray.append(record->toJson());
-    }
-    dataObj["records"] = recordsArray;
+        QRegularExpression whereRegex;
+        const bool useWhereRegex = tryParseRegexPattern(queryDocument.where, &whereRegex);
+        QRegularExpression filterRegex;
+        const bool useFilterRegex = tryParseRegexPattern(queryDocument.filter, &filterRegex);
+        auto records = database->getAllRecordsForDocument(queryDocument.doc, queryDocument.from, queryDocument.to, queryDocument.reverse, queryDocument.limit, useWhereRegex ? QString() : queryDocument.where, useFilterRegex ? QString() : queryDocument.filter, useWhereRegex ? &whereRegex : nullptr, useFilterRegex ? &filterRegex : nullptr);
 
-    QJsonDocument doc(dataObj);
-    return doc.toJson(QJsonDocument::Compact);
+        bool first = true;
+        for (const DataRecord *record : records)
+        {
+            if (!first)
+            {
+                response.append(',');
+            }
+            first = false;
+            appendRecordAsJson(response, record);
+        }
+    }
+    response.append("]}", 2);
+    return QString::fromUtf8(response);
 }
 
 QString WebSocket::handleDeleteDocument(QWebSocket *client, const MessageRequest &message)
@@ -718,20 +769,28 @@ QString WebSocket::handleGetValue(QWebSocket *client, const MessageRequest &mess
         return "";
     }
 
-    QJsonObject obj;
-    obj["id"] = message.id;
-    obj["value"] = "";
-
     auto collection = kv.col;
     auto database = m_databases[collection].get();
-    
-    if (database == nullptr) {
+
+    QByteArray response;
+    response.append("{\"id\":", 6);
+    appendJsonString(response, message.id);
+    response.append(",\"value\":\"", 10);
+
+    if (database == nullptr)
+    {
         m_databases.erase(collection);
-    } else {
-        obj["value"] = database->getValueForKey(kv.key);
     }
-    QJsonDocument doc(obj);
-    return doc.toJson(QJsonDocument::Compact);
+    else
+    {
+        const std::string *value = database->getValueRefForKey(kv.key);
+        if (value != nullptr)
+        {
+            appendJsonEscapedUtf8(response, value->data(), static_cast<qsizetype>(value->size()));
+        }
+    }
+    response.append("\"}", 2);
+    return QString::fromUtf8(response);
 }
 
 QString WebSocket::handleGetValues(QWebSocket *client, const MessageRequest &message)
@@ -746,16 +805,18 @@ QString WebSocket::handleGetValues(QWebSocket *client, const MessageRequest &mes
         return "";
     }
 
-    QJsonObject obj;
-    obj["id"] = message.id;
-    QJsonObject valuesObj;
-
     auto collection = kv.col;
     auto database = m_databases[collection].get();
+
+    QByteArray response;
+    response.append("{\"id\":", 6);
+    appendJsonString(response, message.id);
+    response.append(",\"values\":", 10);
 
     if (database == nullptr)
     {
         m_databases.erase(collection);
+        response.append("{}", 2);
     }
     else
     {
@@ -763,21 +824,23 @@ QString WebSocket::handleGetValues(QWebSocket *client, const MessageRequest &mes
         const bool useRegex = tryParseRegexPattern(kv.key, &keyRegex);
         if (useRegex)
         {
-            auto values = database->getAllValues(&keyRegex);
-            for (auto it = values.constBegin(); it != values.constEnd(); ++it)
-            {
-                valuesObj[it.key()] = it.value();
-            }
+            database->appendAllValuesAsJson(response, &keyRegex);
         }
         else
         {
-            valuesObj[kv.key] = database->getValueForKey(kv.key);
+            response.append('{');
+            appendJsonString(response, kv.key);
+            response.append(":\"", 2);
+            const std::string *value = database->getValueRefForKey(kv.key);
+            if (value != nullptr)
+            {
+                appendJsonEscapedUtf8(response, value->data(), static_cast<qsizetype>(value->size()));
+            }
+            response.append("\"}", 2);
         }
     }
-
-    obj["values"] = valuesObj;
-    QJsonDocument doc(obj);
-    return doc.toJson(QJsonDocument::Compact);
+    response.append('}');
+    return QString::fromUtf8(response);
 }
 
 QString WebSocket::handleRemoveValue(QWebSocket *client, const MessageRequest &message)
@@ -820,23 +883,24 @@ QString WebSocket::handleGetAllValues(QWebSocket *client, const MessageRequest &
 
     auto collection = kv.col;
     auto database = m_databases[collection].get();
-    QJsonObject valuesObj;
-    
-    if (database == nullptr) {
-        m_databases.erase(collection);
-    } else {
-        auto values = database->getAllValues();
-        for (auto it = values.begin(); it != values.end(); ++it)
-        {
-            valuesObj[it.key()] = it.value();
-        }
-    }
 
-    QJsonObject obj;
-    obj["id"] = message.id;
-    obj["values"] = valuesObj;
-    QJsonDocument doc(obj);
-    return doc.toJson(QJsonDocument::Compact);
+    QByteArray response;
+    response.append("{\"id\":\"", 7);
+    const QByteArray idUtf8 = message.id.toUtf8();
+    appendJsonEscapedUtf8(response, idUtf8.constData(), idUtf8.size());
+    response.append("\",\"values\":", 11);
+
+    if (database == nullptr)
+    {
+        m_databases.erase(collection);
+        response.append("{}", 2);
+    }
+    else
+    {
+        database->appendAllValuesAsJson(response);
+    }
+    response.append('}');
+    return QString::fromUtf8(response);
 }
 
 QString WebSocket::handleGetAllKeys(QWebSocket *client, const MessageRequest &message)
@@ -853,23 +917,23 @@ QString WebSocket::handleGetAllKeys(QWebSocket *client, const MessageRequest &me
 
     auto collection = kv.col;
     auto database = m_databases[collection].get();
-    QJsonArray keysArray;
-    
-    if (database == nullptr) {
-        m_databases.erase(collection);
-    } else {
-        auto keys = database->getAllKeys();
-        foreach (const QString &key, keys)
-        {
-            keysArray.append(key);
-        }
-    }
 
-    QJsonObject obj;
-    obj["id"] = message.id;
-    obj["keys"] = keysArray;
-    QJsonDocument doc(obj);
-    return doc.toJson(QJsonDocument::Compact);
+    QByteArray response;
+    response.append("{\"id\":", 6);
+    appendJsonString(response, message.id);
+    response.append(",\"keys\":", 8);
+
+    if (database == nullptr)
+    {
+        m_databases.erase(collection);
+        response.append("[]", 2);
+    }
+    else
+    {
+        database->appendAllKeysAsJsonArray(response);
+    }
+    response.append('}');
+    return QString::fromUtf8(response);
 }
 
 QString WebSocket::handleConnections(QWebSocket *client, const MessageRequest &message)

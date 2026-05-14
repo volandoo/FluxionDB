@@ -3,6 +3,7 @@
 
 #include <QString>
 #include <QHash>
+#include <QByteArray>
 #include <QRegularExpression>
 #include <QMutex>
 #include <vector>
@@ -11,6 +12,8 @@
 #include "datarecord.h"
 
 class SqliteStorage;
+
+void appendJsonEscapedUtf8(QByteArray& out, const char* data, qsizetype size);
 
 class Collection {
 public:
@@ -26,9 +29,12 @@ public:
     
     void setValueForKey(const QString& key, const QString& value);
     QString getValueForKey(const QString& key);
+    const std::string* getValueRefForKey(const QString& key) const;
     void removeValueForKey(const QString& key);
     QHash<QString, QString> getAllValues(const QRegularExpression* keyRegex = nullptr);
+    void appendAllValuesAsJson(QByteArray& out, const QRegularExpression* keyRegex = nullptr);
     QList<QString> getAllKeys();
+    void appendAllKeysAsJsonArray(QByteArray& out);
 
 
     void clearDocument(const QString& key);

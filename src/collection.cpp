@@ -3,13 +3,43 @@
 #include <QElapsedTimer>
 #include <QMutexLocker>
 #include <algorithm>
+#include <cstdio>
 #include <iterator>
 #include <utility>
 #include "sqlitestorage.h"
 
-#ifdef __linux__ 
+#ifdef __linux__
 #include <malloc.h>
 #endif
+
+void appendJsonEscapedUtf8(QByteArray& out, const char* data, qsizetype size)
+{
+    for (qsizetype i = 0; i < size; ++i)
+    {
+        const unsigned char c = static_cast<unsigned char>(data[i]);
+        switch (c)
+        {
+        case '"':  out.append("\\\"", 2); break;
+        case '\\': out.append("\\\\", 2); break;
+        case '\b': out.append("\\b", 2); break;
+        case '\f': out.append("\\f", 2); break;
+        case '\n': out.append("\\n", 2); break;
+        case '\r': out.append("\\r", 2); break;
+        case '\t': out.append("\\t", 2); break;
+        default:
+            if (c < 0x20)
+            {
+                char buf[7];
+                std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                out.append(buf, 6);
+            }
+            else
+            {
+                out.append(static_cast<char>(c));
+            }
+        }
+    }
+}
 
 namespace {
 
@@ -487,6 +517,16 @@ QString Collection::getValueForKey(const QString &key)
     return QString::fromStdString(it->second);
 }
 
+const std::string* Collection::getValueRefForKey(const QString &key) const
+{
+    auto it = m_key_vaue.find(key);
+    if (it == m_key_vaue.end())
+    {
+        return nullptr;
+    }
+    return &it->second;
+}
+
 void Collection::removeValueForKey(const QString &key)
 {
     m_key_vaue.erase(key);
@@ -515,6 +555,32 @@ QHash<QString, QString> Collection::getAllValues(const QRegularExpression *keyRe
     return result;
 }
 
+void Collection::appendAllValuesAsJson(QByteArray &out, const QRegularExpression *keyRegex)
+{
+    const bool hasRegex = keyRegex != nullptr && keyRegex->isValid();
+    out.append('{');
+    bool first = true;
+    for (const auto &[key, value] : m_key_vaue)
+    {
+        if (hasRegex && !keyRegex->match(key).hasMatch())
+        {
+            continue;
+        }
+        if (!first)
+        {
+            out.append(',');
+        }
+        first = false;
+        const QByteArray keyUtf8 = key.toUtf8();
+        out.append('"');
+        appendJsonEscapedUtf8(out, keyUtf8.constData(), keyUtf8.size());
+        out.append("\":\"", 3);
+        appendJsonEscapedUtf8(out, value.data(), static_cast<qsizetype>(value.size()));
+        out.append('"');
+    }
+    out.append('}');
+}
+
 QList<QString> Collection::getAllKeys()
 {
     QList<QString> result;
@@ -523,6 +589,26 @@ QList<QString> Collection::getAllKeys()
         result.append(key);
     }
     return result;
+}
+
+void Collection::appendAllKeysAsJsonArray(QByteArray &out)
+{
+    out.append('[');
+    bool first = true;
+    for (const auto &[key, value] : m_key_vaue)
+    {
+        (void)value;
+        if (!first)
+        {
+            out.append(',');
+        }
+        first = false;
+        const QByteArray keyUtf8 = key.toUtf8();
+        out.append('"');
+        appendJsonEscapedUtf8(out, keyUtf8.constData(), keyUtf8.size());
+        out.append('"');
+    }
+    out.append(']');
 }
 
 void Collection::flushToDisk()
