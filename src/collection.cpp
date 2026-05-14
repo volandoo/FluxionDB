@@ -11,6 +11,45 @@
 #include <malloc.h>
 #endif
 
+namespace {
+
+bool recordPassesPredicates(const DataRecord *record, const std::string &whereText, const std::string &filterText, const QRegularExpression *whereRegex, const QRegularExpression *filterRegex)
+{
+    const bool hasWhere = whereRegex != nullptr || !whereText.empty();
+    const bool hasFilter = filterRegex != nullptr || !filterText.empty();
+    if (!hasWhere && !hasFilter)
+    {
+        return true;
+    }
+
+    QString regexData;
+    if (whereRegex != nullptr || filterRegex != nullptr)
+    {
+        regexData = QString::fromStdString(record->data);
+    }
+
+    if (whereRegex != nullptr && !whereRegex->match(regexData).hasMatch())
+    {
+        return false;
+    }
+    if (whereRegex == nullptr && hasWhere && record->data.find(whereText) == std::string::npos)
+    {
+        return false;
+    }
+    if (filterRegex != nullptr && filterRegex->match(regexData).hasMatch())
+    {
+        return false;
+    }
+    if (filterRegex == nullptr && hasFilter && record->data.find(filterText) != std::string::npos)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+} // namespace
+
 Collection::Collection(const QString &name, SqliteStorage *storage)
 {
     m_name = name;
@@ -121,10 +160,12 @@ DataRecord *Collection::getEarliestRecordForDocument(const QString &key, qint64 
     return it->second[index].get();
 }
 
-QHash<QString, DataRecord *> Collection::getAllRecords(qint64 timestamp, const QString &key, qint64 from, const QRegularExpression *keyRegex)
+QHash<QString, DataRecord *> Collection::getAllRecords(qint64 timestamp, const QString &key, qint64 from, const QRegularExpression *keyRegex, const QString &where, const QString &filter, const QRegularExpression *whereRegex, const QRegularExpression *filterRegex)
 {
     QHash<QString, DataRecord *> result;
     const bool hasRegex = keyRegex != nullptr && keyRegex->isValid();
+    const std::string whereText = where.toStdString();
+    const std::string filterText = filter.toStdString();
     if (hasRegex || key.isEmpty())
     {
         for (const auto &[docKey, records] : m_data)
@@ -141,7 +182,7 @@ QHash<QString, DataRecord *> Collection::getAllRecords(qint64 timestamp, const Q
             if (index != -1)
             {
                 auto record = records[index].get();
-                if (from == 0 || record->timestamp >= from) {
+                if ((from == 0 || record->timestamp >= from) && recordPassesPredicates(record, whereText, filterText, whereRegex, filterRegex)) {
                     result.insert(docKey, record);
                 }
             }
@@ -158,7 +199,7 @@ QHash<QString, DataRecord *> Collection::getAllRecords(qint64 timestamp, const Q
         if (index != -1)
         {
             auto record = it->second[index].get();
-            if (from == 0 || record->timestamp >= from) {
+            if ((from == 0 || record->timestamp >= from) && recordPassesPredicates(record, whereText, filterText, whereRegex, filterRegex)) {
                 result.insert(key, record);
             }
         }
@@ -220,40 +261,38 @@ QList<DataRecord *> Collection::getAllRecordsForDocument(const QString &key, qin
     }
 
     const std::string whereText = where.toStdString();
-    const bool hasWhere = whereRegex != nullptr || !whereText.empty();
     const std::string filterText = filter.toStdString();
-    const bool hasFilter = filterRegex != nullptr || !filterText.empty();
+
+    if (reverse)
+    {
+        for (int i = endIndex; i >= startIndex; --i)
+        {
+            DataRecord *record = it->second[i].get();
+            if (!recordPassesPredicates(record, whereText, filterText, whereRegex, filterRegex))
+            {
+                continue;
+            }
+            result.append(record);
+            if (limit > 0 && result.size() >= limit)
+            {
+                break;
+            }
+        }
+        return result;
+    }
 
     for (int i = startIndex; i <= endIndex; ++i)
     {
         DataRecord *record = it->second[i].get();
-        if (whereRegex != nullptr && !whereRegex->match(QString::fromStdString(record->data)).hasMatch())
-        {
-            continue;
-        }
-        if (whereRegex == nullptr && hasWhere && record->data.find(whereText) == std::string::npos)
-        {
-            continue;
-        }
-        if (filterRegex != nullptr && filterRegex->match(QString::fromStdString(record->data)).hasMatch())
-        {
-            continue;
-        }
-        if (filterRegex == nullptr && hasFilter && record->data.find(filterText) != std::string::npos)
+        if (!recordPassesPredicates(record, whereText, filterText, whereRegex, filterRegex))
         {
             continue;
         }
         result.append(record);
-    }
-
-    if (reverse)
-    {
-        std::reverse(result.begin(), result.end());
-    }
-
-    if (limit > 0 && result.size() > limit)
-    {
-        result.resize(limit);
+        if (limit > 0 && result.size() >= limit)
+        {
+            break;
+        }
     }
 
     return result;

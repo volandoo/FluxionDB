@@ -98,16 +98,6 @@ bool tryParseRegexPattern(const QString &candidate, QRegularExpression *regexOut
     return true;
 }
 
-bool recordDataMatches(const std::string &data, const std::string &literal, const QRegularExpression *regex)
-{
-    if (regex != nullptr)
-    {
-        return regex->match(QString::fromStdString(data)).hasMatch();
-    }
-
-    return !literal.empty() && data.find(literal) != std::string::npos;
-}
-
 } // namespace
 
 
@@ -446,28 +436,15 @@ QString WebSocket::handleQuerySessions(QWebSocket *client, const MessageRequest 
     }
     QRegularExpression docRegex;
     const bool useRegex = tryParseRegexPattern(query.doc, &docRegex);
-    auto records = database->getAllRecords(query.ts, useRegex ? QString() : query.doc, query.from, useRegex ? &docRegex : nullptr);
-
-    const std::string whereText = query.where.toStdString();
     QRegularExpression whereRegex;
     const bool useWhereRegex = tryParseRegexPattern(query.where, &whereRegex);
-    const bool hasWhere = useWhereRegex || !whereText.empty();
-    const std::string filterText = query.filter.toStdString();
     QRegularExpression filterRegex;
     const bool useFilterRegex = tryParseRegexPattern(query.filter, &filterRegex);
-    const bool hasFilter = useFilterRegex || !filterText.empty();
+    auto records = database->getAllRecords(query.ts, useRegex ? QString() : query.doc, query.from, useRegex ? &docRegex : nullptr, useWhereRegex ? QString() : query.where, useFilterRegex ? QString() : query.filter, useWhereRegex ? &whereRegex : nullptr, useFilterRegex ? &filterRegex : nullptr);
 
-    foreach (const QString &key, records.keys())
+    for (auto it = records.constBegin(); it != records.constEnd(); ++it)
     {
-        if (hasWhere && !recordDataMatches(records[key]->data, whereText, useWhereRegex ? &whereRegex : nullptr))
-        {
-            continue;
-        }
-        if (hasFilter && recordDataMatches(records[key]->data, filterText, useFilterRegex ? &filterRegex : nullptr))
-        {
-            continue;
-        }
-        dataObj[key] = records[key]->toJson();
+        dataObj[it.key()] = it.value()->toJson();
     }
 
     obj["records"] = dataObj;
