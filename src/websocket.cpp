@@ -159,6 +159,7 @@ void WebSocket::flushToDisk()
     {
         value->flushToDisk();
     }
+    m_storage->checkpointWal(false);
 }
 
 void WebSocket::start(quint16 port)
