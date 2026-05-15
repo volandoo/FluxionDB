@@ -1,32 +1,20 @@
 #include "deletedocument.h"
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonParseError>
-#include <QDebug>
+#include "json_helpers.h"
+#include <iostream>
 
-DeleteDocument DeleteDocument::fromJson(const QString& jsonString, bool* ok)
+DeleteDocument DeleteDocument::fromJson(std::string_view jsonString, bool* ok)
 {
     DeleteDocument query;
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(jsonString.toUtf8(), &error);
-    
-    if (error.error != QJsonParseError::NoError) {
-        qWarning() << "JSON parse error:" << error.errorString();
+    Json doc;
+    if (!JsonHelpers::parse(jsonString, doc) || !doc.is_object())
+    {
+        std::cerr << "JSON is not an object\n";
         if (ok) *ok = false;
         return query;
     }
 
-    if (!doc.isObject()) {
-        qWarning() << "JSON is not an object";
-        if (ok) *ok = false;
-        return query;
-    }
-
-    QJsonObject obj = doc.object();
-    
-    // Extract fields
-    query.doc = obj["doc"].toString();
-    query.col = obj["col"].toString();
+    query.doc = JsonHelpers::stringValue(doc, "doc");
+    query.col = JsonHelpers::stringValue(doc, "col");
 
     if (ok) *ok = query.isValid();
     return query;
@@ -34,5 +22,5 @@ DeleteDocument DeleteDocument::fromJson(const QString& jsonString, bool* ok)
 
 bool DeleteDocument::isValid() const
 {
-    return !doc.isEmpty();
+    return !doc.empty();
 } 

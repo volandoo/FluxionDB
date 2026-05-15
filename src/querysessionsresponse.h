@@ -1,17 +1,15 @@
 #ifndef QUERYSESSIONSRESPONSE_H
 #define QUERYSESSIONSRESPONSE_H
 
-#include <QString>
-#include <QHash>
-#include <QJsonObject>
+#include <string>
+#include <unordered_map>
 #include "datarecord.h"
 
 struct QuerySessionsResponse {
-    QString id;
-    QHash<QString, DataRecord*> records;
+    std::string id;
+    std::unordered_map<std::string, DataRecord*> records;
 
-    QJsonObject toJson() const;
-    QString toString() const;
+    std::string toString() const;
 };
 
 #endif // QUERYSESSIONSRESPONSE_H 

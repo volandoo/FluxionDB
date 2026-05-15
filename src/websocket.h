@@ -1,46 +1,44 @@
 #ifndef WEBSOCKET_H
 #define WEBSOCKET_H
 
-#include <QObject>
-#include <QString>
-#include <QList>
-#include <QWebSocketServer>
-#include <QWebSocket>
-#include <QTimer>
-#include <QStringList>
-#include <unordered_map>
+#include <atomic>
+#include <cstdint>
 #include <memory>
-#include <QDateTime>
+#include <mutex>
+#include <regex>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <unordered_map>
 
-#include "messagerequest.h"
 #include "collection.h"
+#include "messagerequest.h"
+
 class SqliteStorage;
 
 namespace MessageType {
-    inline const QString Auth = QStringLiteral("auth");
-    inline const QString Insert = QStringLiteral("ins");
-    inline const QString QuerySessions = QStringLiteral("qry");
-    inline const QString QueryCollections = QStringLiteral("cols");
-    inline const QString QueryDocument = QStringLiteral("qdoc");
-    inline const QString DeleteDocument = QStringLiteral("ddoc");
-    inline const QString DeleteCollection = QStringLiteral("dcol");
-    inline const QString DeleteRecord = QStringLiteral("drec");
-    inline const QString DeleteMultipleRecords = QStringLiteral("dmrec");
-    inline const QString DeleteRecordsRange = QStringLiteral("drrng");
-    inline const QString SetValue = QStringLiteral("sval");
-    inline const QString GetValue = QStringLiteral("gval");
-    inline const QString GetValues = QStringLiteral("gvalues");
-    inline const QString RemoveValue = QStringLiteral("rval");
-    inline const QString GetAllValues = QStringLiteral("gvals");
-    inline const QString GetAllKeys = QStringLiteral("gkeys");
-    inline const QString ManageApiKey = QStringLiteral("keys");
-    inline const QString Connections = QStringLiteral("conn");
+    inline constexpr std::string_view Auth = "auth";
+    inline constexpr std::string_view Insert = "ins";
+    inline constexpr std::string_view QuerySessions = "qry";
+    inline constexpr std::string_view QueryCollections = "cols";
+    inline constexpr std::string_view QueryDocument = "qdoc";
+    inline constexpr std::string_view DeleteDocument = "ddoc";
+    inline constexpr std::string_view DeleteCollection = "dcol";
+    inline constexpr std::string_view DeleteRecord = "drec";
+    inline constexpr std::string_view DeleteMultipleRecords = "dmrec";
+    inline constexpr std::string_view DeleteRecordsRange = "drrng";
+    inline constexpr std::string_view SetValue = "sval";
+    inline constexpr std::string_view GetValue = "gval";
+    inline constexpr std::string_view GetValues = "gvalues";
+    inline constexpr std::string_view RemoveValue = "rval";
+    inline constexpr std::string_view GetAllValues = "gvals";
+    inline constexpr std::string_view GetAllKeys = "gkeys";
+    inline constexpr std::string_view ManageApiKey = "keys";
+    inline constexpr std::string_view Connections = "conn";
 }
 
-// comment
-class WebSocket : public QObject
+class WebSocket
 {
-    Q_OBJECT
 public:
     enum class ApiKeyScope {
         ReadOnly,
@@ -56,76 +54,84 @@ public:
         ManageKeys
     };
 
-    explicit WebSocket(const QString& masterKey, const QString& dataFolder, int flushIntervalSeconds = 15, QObject *parent = nullptr);
+    struct ClientInfo {
+        std::string id;
+        std::string apiKey;
+        std::string name;
+        std::string ip;
+        ApiKeyScope scope = ApiKeyScope::ReadOnly;
+        std::int64_t connectedAtMs = 0;
+        std::uint64_t messageCount = 0;
+    };
+
+    explicit WebSocket(std::string masterKey, std::string dataFolder, int flushIntervalSeconds = 15);
     ~WebSocket();
 
-    void start(quint16 port = 8080);
-
-private slots:
-    void onNewConnection();
-    void processMessage(const QString &message);
-    void socketDisconnected();
-    void flushToDisk();
+    void start(std::uint16_t port = 8080);
 
 private:
-    void handleMessage(QWebSocket* client, const MessageRequest& message);
-    
-    QString handleQueryDocument(QWebSocket* client, const MessageRequest& message);
-    QString handleQuerySessions(QWebSocket* client, const MessageRequest& message);
-    QString handleQueryCollections(QWebSocket* client, const MessageRequest& message);
-    QString handleDeleteDocument(QWebSocket* client, const MessageRequest& message);
-    QString handleDeleteCollection(QWebSocket* client, const MessageRequest& message);
-    QString handleDeleteRecord(QWebSocket* client, const MessageRequest& message);
-    QString handleDeleteMultipleRecords(QWebSocket* client, const MessageRequest& message);
-    QString handleDeleteRecordsRange(QWebSocket* client, const MessageRequest& message);
-    QString handleInsert(QWebSocket* client, const MessageRequest& message);
-    QString handleConnections(QWebSocket* client, const MessageRequest& message);
+    using ClientSender = void (*)(void* socket, std::string_view message, bool closeAfterSend);
 
-    // key value
-    QString handleSetValue(QWebSocket* client, const MessageRequest& message);
-    QString handleGetValue(QWebSocket* client, const MessageRequest& message);
-    QString handleGetValues(QWebSocket* client, const MessageRequest& message);
-    QString handleRemoveValue(QWebSocket* client, const MessageRequest& message);
-    QString handleGetAllValues(QWebSocket* client, const MessageRequest& message);
-    QString handleGetAllKeys(QWebSocket* client, const MessageRequest& message);
-    QString handleManageApiKey(QWebSocket* client, const MessageRequest& message);
+    void processMessage(ClientInfo& client, void* socket, ClientSender sender, std::string_view message);
+    void flushToDisk();
+    void startFlushThread();
+    void stopFlushThread();
+
+    std::string handleMessage(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleQueryDocument(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleQuerySessions(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleQueryCollections(ClientInfo& client, const MessageRequest& message);
+    std::string handleDeleteDocument(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleDeleteCollection(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleDeleteRecord(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleDeleteMultipleRecords(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleDeleteRecordsRange(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleInsert(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleConnections(const ClientInfo& client, const MessageRequest& message);
+
+    std::string handleSetValue(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleGetValue(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleGetValues(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleRemoveValue(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleGetAllValues(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleGetAllKeys(ClientInfo& client, const MessageRequest& message, bool& closeClient);
+    std::string handleManageApiKey(ClientInfo& client, const MessageRequest& message, bool& closeClient);
 
     bool hasPermission(ApiKeyScope scope, RequiredPermission required) const;
-    RequiredPermission permissionForType(const QString& type) const;
-    bool registerApiKey(const QString& key, ApiKeyScope scope, bool deletable, QString* errorMessage = nullptr, bool persistToStorage = true);
-    bool removeApiKey(const QString& key, QString* errorMessage = nullptr);
-    bool parseScope(const QString& scopeString, ApiKeyScope* scopeOut) const;
-    QString scopeToString(ApiKeyScope scope) const;
+    RequiredPermission permissionForType(std::string_view type) const;
+    bool registerApiKey(std::string_view key, ApiKeyScope scope, bool deletable, std::string* errorMessage = nullptr, bool persistToStorage = true);
+    bool removeApiKey(std::string_view key, std::string* errorMessage = nullptr);
+    bool parseScope(std::string_view scopeString, ApiKeyScope* scopeOut) const;
+    std::string scopeToString(ApiKeyScope scope) const;
     void loadApiKeysFromDisk();
+    Collection* collectionFor(std::string_view name, bool create);
 
     struct ApiKeyEntry {
         ApiKeyScope scope;
-        bool deletable;
+        bool deletable = false;
     };
 
-    ApiKeyEntry* lookupApiKey(const QString& key);
+    ApiKeyEntry* lookupApiKey(std::string_view key);
 
-    void rejectClient(QWebSocket* socket, const QString& reason);
+    static std::int64_t nowMs();
+    static void appendJsonString(std::string& out, std::string_view value);
+    static void appendRecordAsJson(std::string& out, const DataRecord* record);
+    static bool tryParseRegexPattern(std::string_view candidate, std::regex* regexOut);
+    static std::string normalizeScope(std::string_view scope);
 
-    QWebSocketServer *m_server;
-    QList<QWebSocket *> m_clients;
-    
-    // Configuration
-    QString m_masterKey;
-    QString m_dataFolder;
+    std::string m_masterKey;
+    std::string m_dataFolder;
+    int m_flushIntervalSeconds = 15;
 
-    // In-memory databases
     std::unique_ptr<SqliteStorage> m_storage;
-    std::unordered_map<QString, std::unique_ptr<Collection>> m_databases;
-    std::unordered_map<QString, ApiKeyScope> m_clientScopes;
-    std::unordered_map<QString, ApiKeyEntry> m_apiKeys;
-    std::unordered_map<QString, QString> m_clientKeys;
-    std::unordered_map<QString, QString> m_clientNames;
-    std::unordered_map<QString, qint64> m_connectionTimes;
-    std::unordered_map<QString, quint64> m_clientMessageCounts;
+    std::unordered_map<std::string, std::unique_ptr<Collection>> m_databases;
+    std::unordered_map<std::string, ApiKeyEntry> m_apiKeys;
+    std::unordered_map<std::string, ClientInfo*> m_clients;
 
-    // flush timer
-    QTimer m_flushTimer;
+    std::mutex m_mutex;
+    std::atomic<bool> m_running{false};
+    std::thread m_flushThread;
+    std::uint64_t m_nextClientId = 1;
 };
 
-#endif // WEBSOCKET_H 
+#endif // WEBSOCKET_H

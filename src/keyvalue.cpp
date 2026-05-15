@@ -1,34 +1,32 @@
 #include "keyvalue.h"
-#include <QJsonDocument>
-#include <QJsonObject>
+#include "json_helpers.h"
 
-KeyValue KeyValue::fromJson(const QString& jsonString, bool* ok)
+KeyValue KeyValue::fromJson(std::string_view jsonString, bool* ok)
 {
     KeyValue kv;
-    QJsonDocument doc = QJsonDocument::fromJson(jsonString.toUtf8());
-    if (!doc.isObject()) {
+    Json doc;
+    if (!JsonHelpers::parse(jsonString, doc) || !doc.is_object()) {
         if (ok) *ok = false;
         return kv;
     }
-    QJsonObject obj = doc.object();
-    kv.key = obj["key"].toString();
-    kv.value = obj["value"].toString();
-    kv.col = obj["col"].toString();
+    kv.key = JsonHelpers::stringValue(doc, "key");
+    kv.value = JsonHelpers::stringValue(doc, "value");
+    kv.col = JsonHelpers::stringValue(doc, "col");
     if (ok) *ok = kv.isValid();
     return kv;
 }
 
 bool KeyValue::isValid() const
 {
-    return !col.isEmpty();
+    return !col.empty();
 }
 
 bool KeyValue::hasKey() const
 {
-    return !key.isEmpty();
+    return !key.empty();
 }
 
 bool KeyValue::hasValue() const
 {
-    return !value.isEmpty();
+    return !value.empty();
 }

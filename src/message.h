@@ -1,14 +1,15 @@
 #ifndef MESSAGE_H
 #define MESSAGE_H
 
-#include <QString>
+#include <string>
+#include <string_view>
 
 struct Message {
-    QString id;
-    QString type;
-    QString data;
+    std::string id;
+    std::string type;
+    std::string data;
     
-    static Message fromJson(const QString& jsonString, bool* ok = nullptr);
+    static Message fromJson(std::string_view jsonString, bool* ok = nullptr);
     bool isValid() const;
 };
 

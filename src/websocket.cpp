@@ -1,600 +1,533 @@
 #include "websocket.h"
-#include <QDebug>
-#include <QList>
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QJsonValue>
-#include <QJsonDocument>
-#include <QJsonParseError>
-#include <QTime>
-#include <QElapsedTimer>
-#include <QUuid>
-#include <QUrl>
-#include <QUrlQuery>
-#include <QWebSocketProtocol>
-#include <QRegularExpression>
-#include <cstdio>
-#include "insertrequest.h"
-#include "querysessions.h"
-#include "querydocument.h"
-#include "deletedocument.h"
+
+#include <App.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <csignal>
+#include <iostream>
+#include <sstream>
+
 #include "deletecollection.h"
-#include "keyvalue.h"
-#include "deleterecord.h"
+#include "deletedocument.h"
 #include "deletemultiplerecords.h"
+#include "deleterecord.h"
 #include "deleterecordsrange.h"
+#include "insertrequest.h"
+#include "json_helpers.h"
+#include "keyvalue.h"
+#include "querydocument.h"
+#include "querysessions.h"
 #include "sqlitestorage.h"
 
 namespace {
 
-bool tryParseRegexPattern(const QString &candidate, QRegularExpression *regexOut)
+std::atomic<bool> g_stopRequested{false};
+
+void handleSignal(int)
 {
-    if (candidate.size() < 2 || !candidate.startsWith('/'))
+    g_stopRequested.store(true);
+}
+
+struct PerSocketData {
+    WebSocket::ClientInfo client;
+};
+
+using UwsSocket = uWS::WebSocket<false, true, PerSocketData>;
+
+void sendToUwsSocket(void* socket, std::string_view message, bool closeAfterSend)
+{
+    auto* ws = static_cast<UwsSocket*>(socket);
+    if (!message.empty())
     {
-        return false;
+        ws->send(message, uWS::OpCode::TEXT);
     }
-
-    int closingSlashIndex = -1;
-    bool escaping = false;
-    for (int i = 1; i < candidate.size(); ++i)
+    if (closeAfterSend)
     {
-        const QChar ch = candidate.at(i);
-        if (!escaping && ch == '/')
-        {
-            closingSlashIndex = i;
-            break;
-        }
-
-        if (!escaping && ch == '\\')
-        {
-            escaping = true;
-            continue;
-        }
-
-        escaping = false;
+        ws->end(1008, "policy violation");
     }
-
-    if (closingSlashIndex == -1)
-    {
-        return false;
-    }
-
-    const QString pattern = candidate.mid(1, closingSlashIndex - 1);
-    const QString flags = candidate.mid(closingSlashIndex + 1);
-
-    QRegularExpression::PatternOptions options = QRegularExpression::NoPatternOption;
-    for (const QChar flag : flags)
-    {
-        if (flag == 'i')
-        {
-            options |= QRegularExpression::CaseInsensitiveOption;
-        }
-        else if (flag == 'm')
-        {
-            options |= QRegularExpression::MultilineOption;
-        }
-        else if (flag == 's')
-        {
-            options |= QRegularExpression::DotMatchesEverythingOption;
-        }
-        else
-        {
-            qWarning() << "Invalid regex flag" << flag << "in pattern" << candidate;
-            return false;
-        }
-    }
-
-    QRegularExpression regex(pattern, options);
-    if (!regex.isValid())
-    {
-        qWarning() << "Invalid regex pattern" << candidate << ":" << regex.errorString();
-        return false;
-    }
-
-    if (regexOut != nullptr)
-    {
-        *regexOut = regex;
-    }
-
-    return true;
 }
 
 } // namespace
 
-
-WebSocket::WebSocket(const QString &masterKey, const QString &dataFolder, int flushIntervalSeconds, QObject *parent) : QObject(parent)
+WebSocket::WebSocket(std::string masterKey, std::string dataFolder, int flushIntervalSeconds)
+    : m_masterKey(std::move(masterKey)),
+      m_dataFolder(std::move(dataFolder)),
+      m_flushIntervalSeconds(flushIntervalSeconds > 0 ? flushIntervalSeconds : 15)
 {
-    m_masterKey = masterKey;
-    m_dataFolder = dataFolder;
-    m_server = new QWebSocketServer(QStringLiteral("WebSocket Server"), QWebSocketServer::NonSecureMode, this);
-
-    QString errorMessage;
-    if (!registerApiKey(m_masterKey, ApiKeyScope::ReadWriteDelete, false, &errorMessage)) {
-        qWarning() << "Failed to register master API key:" << errorMessage;
+    std::string errorMessage;
+    if (!registerApiKey(m_masterKey, ApiKeyScope::ReadWriteDelete, false, &errorMessage))
+    {
+        std::cerr << "Failed to register master API key: " << errorMessage << '\n';
     }
-    
-    if (m_dataFolder.isEmpty()) {
-        qInfo() << "Running in non-persistent mode (no data folder specified)";
+
+    if (m_dataFolder.empty())
+    {
+        std::cerr << "Running in non-persistent mode (no data folder specified)\n";
         return;
     }
+
     m_storage = std::make_unique<SqliteStorage>();
     if (!m_storage->initialize(m_dataFolder))
     {
-        qFatal("Failed to initialize SQLite storage");
+        throw std::runtime_error("Failed to initialize SQLite storage");
     }
-    qInfo() << "Running in persistent mode (data folder specified):" << m_dataFolder;
-    qInfo() << "Flush interval set to" << flushIntervalSeconds << "seconds";
-    m_flushTimer.start(flushIntervalSeconds * 1000);
-    connect(&m_flushTimer, &QTimer::timeout, this, &WebSocket::flushToDisk);
 
-    // Load API keys from storage
+    std::cerr << "Running in persistent mode (data folder specified): " << m_dataFolder << '\n';
+    std::cerr << "Flush interval set to " << m_flushIntervalSeconds << " seconds\n";
+
     loadApiKeysFromDisk();
-
-    // Load existing collections from SQLite
-    if (m_storage != nullptr)
+    for (const std::string& collection : m_storage->collections())
     {
-        const QStringList storedCollections = m_storage->collections();
-        for (const QString &collection : storedCollections)
-        {
-            auto col = std::make_unique<Collection>(collection, m_storage.get());
-            col->loadFromDisk();
-            m_databases[collection] = std::move(col);
-        }
+        auto col = std::make_unique<Collection>(collection, m_storage.get());
+        col->loadFromDisk();
+        m_databases[collection] = std::move(col);
     }
+
+    startFlushThread();
 }
 
 WebSocket::~WebSocket()
 {
-    m_server->close();
-    qDeleteAll(m_clients.begin(), m_clients.end());
+    stopFlushThread();
+    flushToDisk();
+}
+
+void WebSocket::startFlushThread()
+{
+    if (m_storage == nullptr || m_running.exchange(true))
+    {
+        return;
+    }
+
+    m_flushThread = std::thread([this]() {
+        while (m_running.load())
+        {
+            for (int i = 0; i < m_flushIntervalSeconds && m_running.load(); ++i)
+            {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+            if (m_running.load())
+            {
+                flushToDisk();
+            }
+        }
+    });
+}
+
+void WebSocket::stopFlushThread()
+{
+    m_running.store(false);
+    if (m_flushThread.joinable())
+    {
+        m_flushThread.join();
+    }
 }
 
 void WebSocket::flushToDisk()
 {
-    if (m_storage == nullptr) {
-        return; // Skip persistence if no storage specified
-    }
-    
-    for (auto &[key, value] : m_databases)
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_storage == nullptr)
     {
+        return;
+    }
+
+    for (auto& [key, value] : m_databases)
+    {
+        (void)key;
         value->flushToDisk();
     }
     m_storage->checkpointWal(false);
 }
 
-void WebSocket::start(quint16 port)
+void WebSocket::start(std::uint16_t port)
 {
-    if (m_server->listen(QHostAddress::Any, port))
-    {
-        qInfo() << QTime::currentTime().toString() << "WebSocket server listening on port" << port;
-        connect(m_server, &QWebSocketServer::newConnection, this, &WebSocket::onNewConnection);
-    }
-    else
-    {
-        qFatal("Failed to start WebSocket server");
-    }
+    std::signal(SIGINT, handleSignal);
+    std::signal(SIGTERM, handleSignal);
+
+    uWS::App app;
+    app.ws<PerSocketData>("/*", {
+        .compression = uWS::SHARED_COMPRESSOR,
+        .maxPayloadLength = 16 * 1024 * 1024,
+        .idleTimeout = 120,
+        .maxBackpressure = 16 * 1024 * 1024,
+        .closeOnBackpressureLimit = false,
+        .resetIdleTimeoutOnSend = true,
+        .sendPingsAutomatically = true,
+        .upgrade = [this](auto* res, auto* req, auto* context) {
+            const std::string apiKey(req->getQuery("api-key"));
+            const std::string clientName(req->getQuery("name"));
+            if (apiKey.empty())
+            {
+                res->writeStatus("401 Unauthorized")->end("Missing API key parameter");
+                return;
+            }
+
+            ApiKeyEntry* entry = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                entry = lookupApiKey(apiKey);
+            }
+            if (entry == nullptr)
+            {
+                res->writeStatus("401 Unauthorized")->end("Unknown API key");
+                return;
+            }
+
+            PerSocketData data;
+            data.client.id = std::to_string(m_nextClientId++);
+            data.client.apiKey = apiKey;
+            data.client.name = clientName;
+            data.client.scope = entry->scope;
+            data.client.connectedAtMs = nowMs();
+
+            res->template upgrade<PerSocketData>(
+                std::move(data),
+                req->getHeader("sec-websocket-key"),
+                req->getHeader("sec-websocket-protocol"),
+                req->getHeader("sec-websocket-extensions"),
+                context);
+        },
+        .open = [this](auto* ws) {
+            auto* data = ws->getUserData();
+            data->client.ip = std::string(ws->getRemoteAddressAsText());
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_clients[data->client.id] = &data->client;
+            }
+            std::cerr << "New client connected: " << data->client.ip
+                      << " ID " << data->client.id
+                      << " Scope " << scopeToString(data->client.scope) << '\n';
+            ws->send("{\"message\":\"Authentication successful\",\"type\":\"ready\"}", uWS::OpCode::TEXT);
+        },
+        .message = [this](auto* ws, std::string_view message, uWS::OpCode opCode) {
+            if (opCode != uWS::OpCode::TEXT)
+            {
+                ws->end(1003, "text frames only");
+                return;
+            }
+            auto* data = ws->getUserData();
+            processMessage(data->client, ws, sendToUwsSocket, message);
+        },
+        .close = [this](auto* ws, int code, std::string_view message) {
+            auto* data = ws->getUserData();
+            const std::int64_t lifetimeMs = nowMs() - data->client.connectedAtMs;
+            std::cerr << "Client disconnected: " << data->client.ip
+                      << " ID " << data->client.id
+                      << " CloseCode " << code
+                      << " CloseReason " << message
+                      << " LifetimeMs " << lifetimeMs
+                      << " Messages " << data->client.messageCount << '\n';
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_clients.erase(data->client.id);
+        }
+    }).listen(port, [port](auto* token) {
+        if (token)
+        {
+            std::cerr << "WebSocket server listening on port " << port << '\n';
+        }
+        else
+        {
+            std::cerr << "Failed to start WebSocket server on port " << port << '\n';
+            g_stopRequested.store(true);
+        }
+    });
+
+    app.run();
 }
 
-void WebSocket::onNewConnection()
+void WebSocket::processMessage(ClientInfo& client, void* socket, ClientSender sender, std::string_view message)
 {
-    QWebSocket *socket = m_server->nextPendingConnection();
-    if (!socket)
-    {
-        return;
-    }
+    ++client.messageCount;
 
-    socket->setObjectName(QUuid::createUuid().toString());
-    
-    // In Qt 6.4, QWebSocketHandshakeRequest is not available
-    // Extract API key from the request URL query parameters
-    const QUrl requestUrl = socket->requestUrl();
-    const QUrlQuery query(requestUrl);
-    const QString apiKey = query.queryItemValue("api-key");
-    const QString clientName = query.queryItemValue("name");
-
-    if (apiKey.isEmpty())
-    {
-        qWarning() << QTime::currentTime().toString() << "Missing API key parameter from" << socket->peerAddress().toString();
-        rejectClient(socket, QStringLiteral("Missing API key parameter"));
-        return;
-    }
-
-    ApiKeyEntry *entry = lookupApiKey(apiKey);
-    if (entry == nullptr)
-    {
-        qWarning() << QTime::currentTime().toString() << "Unknown API key from" << socket->peerAddress().toString();
-        rejectClient(socket, QStringLiteral("Unknown API key"));
-        return;
-    }
-
-    m_clientScopes[socket->objectName()] = entry->scope;
-    m_clientKeys[socket->objectName()] = apiKey;
-    m_clientNames[socket->objectName()] = clientName;
-
-    qInfo() << QTime::currentTime().toString() << "New client connected:" << socket->peerAddress().toString()
-            << "ID" << socket->objectName() << "Scope" << scopeToString(entry->scope);
-    connect(socket, &QWebSocket::textMessageReceived, this, &WebSocket::processMessage);
-    connect(socket, &QWebSocket::disconnected, this, &WebSocket::socketDisconnected);
-    auto logSocketError = [socket](QAbstractSocket::SocketError error) {
-        qWarning() << QTime::currentTime().toString() << "WebSocket error:"
-                   << socket->peerAddress().toString()
-                   << "ID" << socket->objectName()
-                   << "Error" << static_cast<int>(error)
-                   << "Text" << socket->errorString();
-    };
-#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
-    connect(socket, &QWebSocket::errorOccurred, this, logSocketError);
-#else
-    connect(socket, qOverload<QAbstractSocket::SocketError>(&QWebSocket::error), this, logSocketError);
-#endif
-    m_clients << socket;
-    m_connectionTimes[socket->objectName()] = QDateTime::currentMSecsSinceEpoch();
-    m_clientMessageCounts[socket->objectName()] = 0;
-
-    // Send authentication success message
-    QJsonObject readyMessage;
-    readyMessage["type"] = "ready";
-    readyMessage["message"] = "Authentication successful";
-    QJsonDocument doc(readyMessage);
-    socket->sendTextMessage(doc.toJson(QJsonDocument::Compact));
-}
-
-void WebSocket::processMessage(const QString &message)
-{
-    QWebSocket *client = qobject_cast<QWebSocket *>(sender());
-    if (!client) { return; }
-
-    ++m_clientMessageCounts[client->objectName()];
-        
-    bool ok;
+    bool ok = false;
     MessageRequest msg = MessageRequest::fromJson(message, &ok);
-
     if (!ok)
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid message"
-                   << "Peer" << client->peerAddress().toString()
-                   << "ID" << client->objectName()
-                   << "Message" << message;
-        client->sendTextMessage("");
-        client->close();
+        std::cerr << "Closing client for safety: invalid message from " << client.ip << " ID " << client.id << '\n';
+        sender(socket, "", true);
         return;
     }
 
     if (msg.type == MessageType::Auth)
     {
-        QJsonObject obj;
+        Json obj;
         obj["id"] = msg.id;
-        obj["error"] = "auth messages are not supported; use the x-api-key header";
-        client->sendTextMessage(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+        obj["error"] = "auth messages are not supported; use the api-key query parameter";
+        sender(socket, obj.dump(), false);
         return;
     }
 
-    auto scopeIt = m_clientScopes.find(client->objectName());
-    if (scopeIt == m_clientScopes.end())
+    const RequiredPermission requiredPermission = permissionForType(msg.type);
+    if (!hasPermission(client.scope, requiredPermission))
     {
-        qWarning() << QTime::currentTime().toString() << "Client with no registered scope:" << client->peerAddress().toString();
-        rejectClient(client, QStringLiteral("Authentication required"));
-        return;
-    }
-
-    RequiredPermission requiredPermission = permissionForType(msg.type);
-    if (!hasPermission(scopeIt->second, requiredPermission))
-    {
-        qWarning() << QTime::currentTime().toString() << "Permission denied for client" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Type" << msg.type;
-        QJsonObject obj;
+        Json obj;
         obj["id"] = msg.id;
         obj["error"] = "permission denied";
-        client->sendTextMessage(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+        sender(socket, obj.dump(), false);
         return;
     }
 
-    handleMessage(client, msg);
+    bool closeClient = false;
+    std::string response;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        response = handleMessage(client, msg, closeClient);
+    }
+
+    if (!response.empty() || closeClient)
+    {
+        sender(socket, response, closeClient);
+    }
 }
 
-void WebSocket::handleMessage(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleMessage(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    QString response;
-       
     if (message.type == MessageType::Insert)
     {
-        response = handleInsert(client, message);
+        return handleInsert(client, message, closeClient);
     }
-    else if (message.type == MessageType::QuerySessions)
+    if (message.type == MessageType::QuerySessions)
     {
-        response = handleQuerySessions(client, message);
+        return handleQuerySessions(client, message, closeClient);
     }
-    else if (message.type == MessageType::QueryCollections)
+    if (message.type == MessageType::QueryCollections)
     {
-        response = handleQueryCollections(client, message);
+        return handleQueryCollections(client, message);
     }
-    else if (message.type == MessageType::QueryDocument)
+    if (message.type == MessageType::QueryDocument)
     {
-        response = handleQueryDocument(client, message);
+        return handleQueryDocument(client, message, closeClient);
     }
-    else if (message.type == MessageType::DeleteDocument)
+    if (message.type == MessageType::DeleteDocument)
     {
-        response = handleDeleteDocument(client, message);
+        return handleDeleteDocument(client, message, closeClient);
     }
-    else if (message.type == MessageType::DeleteCollection)
+    if (message.type == MessageType::DeleteCollection)
     {
-        response = handleDeleteCollection(client, message);
+        return handleDeleteCollection(client, message, closeClient);
     }
-    else if (message.type == MessageType::DeleteRecord)
+    if (message.type == MessageType::DeleteRecord)
     {
-        response = handleDeleteRecord(client, message);
+        return handleDeleteRecord(client, message, closeClient);
     }
-    else if (message.type == MessageType::DeleteMultipleRecords)
+    if (message.type == MessageType::DeleteMultipleRecords)
     {
-        response = handleDeleteMultipleRecords(client, message);
+        return handleDeleteMultipleRecords(client, message, closeClient);
     }
-    else if (message.type == MessageType::DeleteRecordsRange)
+    if (message.type == MessageType::DeleteRecordsRange)
     {
-        response = handleDeleteRecordsRange(client, message);
+        return handleDeleteRecordsRange(client, message, closeClient);
     }
-    else if (message.type == MessageType::SetValue)
+    if (message.type == MessageType::SetValue)
     {
-        response = handleSetValue(client, message);
+        return handleSetValue(client, message, closeClient);
     }
-    else if (message.type == MessageType::GetValue)
+    if (message.type == MessageType::GetValue)
     {
-        response = handleGetValue(client, message);
+        return handleGetValue(client, message, closeClient);
     }
-    else if (message.type == MessageType::GetValues)
+    if (message.type == MessageType::GetValues)
     {
-        response = handleGetValues(client, message);
+        return handleGetValues(client, message, closeClient);
     }
-    else if (message.type == MessageType::RemoveValue)
+    if (message.type == MessageType::RemoveValue)
     {
-        response = handleRemoveValue(client, message);
+        return handleRemoveValue(client, message, closeClient);
     }
-    else if (message.type == MessageType::GetAllValues)
+    if (message.type == MessageType::GetAllValues)
     {
-        response = handleGetAllValues(client, message);
+        return handleGetAllValues(client, message, closeClient);
     }
-    else if (message.type == MessageType::GetAllKeys)
+    if (message.type == MessageType::GetAllKeys)
     {
-        response = handleGetAllKeys(client, message);
+        return handleGetAllKeys(client, message, closeClient);
     }
-    else if (message.type == MessageType::ManageApiKey)
+    if (message.type == MessageType::ManageApiKey)
     {
-        response = handleManageApiKey(client, message);
+        return handleManageApiKey(client, message, closeClient);
     }
-    else if (message.type == MessageType::Connections)
+    if (message.type == MessageType::Connections)
     {
-        response = handleConnections(client, message);
+        return handleConnections(client, message);
     }
-    else
-    {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: unknown message type"
-                   << "Peer" << client->peerAddress().toString()
-                   << "ID" << client->objectName()
-                   << "Request" << message.id
-                   << "Type" << message.type;
-        client->sendTextMessage("{\"error\": \"Unknown message type\"}");
-        client->close();
-        return;
-    }
-    if (!response.isEmpty()) {
-        if (client->state() != QAbstractSocket::ConnectedState)
-        {
-            qWarning() << QTime::currentTime().toString() << "Client disconnected:" << client->peerAddress().toString() << "ID" << client->objectName();
-            return;
-        }
-        client->sendTextMessage(response);
-    }
+
+    closeClient = true;
+    return "{\"error\":\"Unknown message type\"}";
 }
 
-QString WebSocket::handleInsert(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleInsert(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
-    QList<InsertRequest> payloads = InsertRequest::fromJson(message.data, &ok);
+    (void)client;
+    bool ok = false;
+    std::vector<InsertRequest> payloads = InsertRequest::fromJson(message.data, &ok);
     if (!ok)
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid insert message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
 
-    foreach (InsertRequest payload, payloads)
+    for (const InsertRequest& payload : payloads)
     {
-        auto database = m_databases[payload.col].get();
-        if (database == nullptr)
-        {
-            m_databases[payload.col] = std::make_unique<Collection>(payload.col, m_storage.get());
-            database = m_databases[payload.col].get();
-        }
+        Collection* database = collectionFor(payload.col, true);
         database->insert(payload.ts, payload.doc, payload.data);
     }
 
-    QJsonObject obj;
-    obj["id"] = message.id;
-    QJsonDocument doc(obj);
-    return doc.toJson(QJsonDocument::Compact);
+    return JsonHelpers::compactObjectWithId(message.id);
 }
 
-namespace {
-
-void appendInt64(QByteArray &out, qint64 value)
+std::string WebSocket::handleQuerySessions(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    char buf[32];
-    const int len = std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(value));
-    out.append(buf, len);
-}
-
-void appendJsonString(QByteArray &out, const QString &s)
-{
-    const QByteArray utf8 = s.toUtf8();
-    out.append('"');
-    appendJsonEscapedUtf8(out, utf8.constData(), utf8.size());
-    out.append('"');
-}
-
-void appendRecordAsJson(QByteArray &out, const DataRecord *record)
-{
-    out.append("{\"ts\":", 6);
-    appendInt64(out, record->timestamp);
-    out.append(",\"data\":\"", 9);
-    appendJsonEscapedUtf8(out, record->data.data(), static_cast<qsizetype>(record->data.size()));
-    out.append("\"}", 2);
-}
-
-}
-
-QString WebSocket::handleQuerySessions(QWebSocket *client, const MessageRequest &message)
-{
-    bool ok;
+    (void)client;
+    bool ok = false;
     QuerySessions query = QuerySessions::fromJson(message.data, &ok);
     if (!ok)
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid query sessions message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
-    auto database = m_databases[query.col].get();
 
-    QByteArray response;
-    response.append("{\"id\":", 6);
+    Collection* database = collectionFor(query.col, false);
+    std::string response;
+    response.append("{\"id\":");
     appendJsonString(response, message.id);
-    response.append(",\"records\":", 11);
+    response.append(",\"records\":");
 
     if (database == nullptr)
     {
-        m_databases.erase(query.col);
-        response.append("{}", 2);
+        response.append("{}");
     }
     else
     {
-        QRegularExpression docRegex;
+        std::regex docRegex;
         const bool useRegex = tryParseRegexPattern(query.doc, &docRegex);
-        QRegularExpression whereRegex;
+        std::regex whereRegex;
         const bool useWhereRegex = tryParseRegexPattern(query.where, &whereRegex);
-        QRegularExpression filterRegex;
+        std::regex filterRegex;
         const bool useFilterRegex = tryParseRegexPattern(query.filter, &filterRegex);
-        auto records = database->getAllRecords(query.ts, useRegex ? QString() : query.doc, query.from, useRegex ? &docRegex : nullptr, useWhereRegex ? QString() : query.where, useFilterRegex ? QString() : query.filter, useWhereRegex ? &whereRegex : nullptr, useFilterRegex ? &filterRegex : nullptr);
+        auto records = database->getAllRecords(query.ts,
+                                               useRegex ? std::string_view() : std::string_view(query.doc),
+                                               query.from,
+                                               useRegex ? &docRegex : nullptr,
+                                               useWhereRegex ? std::string_view() : std::string_view(query.where),
+                                               useFilterRegex ? std::string_view() : std::string_view(query.filter),
+                                               useWhereRegex ? &whereRegex : nullptr,
+                                               useFilterRegex ? &filterRegex : nullptr);
 
-        response.append('{');
+        response.push_back('{');
         bool first = true;
-        for (auto it = records.constBegin(); it != records.constEnd(); ++it)
+        for (const auto& [key, record] : records)
         {
             if (!first)
             {
-                response.append(',');
+                response.push_back(',');
             }
             first = false;
-            appendJsonString(response, it.key());
-            response.append(':');
-            appendRecordAsJson(response, it.value());
+            appendJsonString(response, key);
+            response.push_back(':');
+            appendRecordAsJson(response, record);
         }
-        response.append('}');
+        response.push_back('}');
     }
-    response.append('}');
-    return QString::fromUtf8(response);
+    response.push_back('}');
+    return response;
 }
 
-QString WebSocket::handleQueryCollections(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleQueryCollections(ClientInfo& client, const MessageRequest& message)
 {
-    Q_UNUSED(client);
-    QByteArray response;
-    response.append("{\"id\":", 6);
+    (void)client;
+    std::string response;
+    response.append("{\"id\":");
     appendJsonString(response, message.id);
-    response.append(",\"collections\":[", 16);
+    response.append(",\"collections\":[");
     bool first = true;
-    for (const auto &[key, value] : m_databases)
+    for (const auto& [key, value] : m_databases)
     {
-        Q_UNUSED(value);
+        (void)value;
         if (!first)
         {
-            response.append(',');
+            response.push_back(',');
         }
         first = false;
         appendJsonString(response, key);
     }
-    response.append("]}", 2);
-    return QString::fromUtf8(response);
+    response.append("]}");
+    return response;
 }
 
-QString WebSocket::handleQueryDocument(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleQueryDocument(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
+    (void)client;
+    bool ok = false;
     QueryDocument queryDocument = QueryDocument::fromJson(message.data, &ok);
     if (!ok)
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid query document message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
 
-    auto database = m_databases[queryDocument.col].get();
-
-    QByteArray response;
-    response.append("{\"id\":", 6);
+    Collection* database = collectionFor(queryDocument.col, false);
+    std::string response;
+    response.append("{\"id\":");
     appendJsonString(response, message.id);
-    response.append(",\"records\":[", 12);
+    response.append(",\"records\":[");
 
-    if (database == nullptr)
+    if (database != nullptr)
     {
-        m_databases.erase(queryDocument.col);
-    }
-    else
-    {
-        QRegularExpression whereRegex;
+        std::regex whereRegex;
         const bool useWhereRegex = tryParseRegexPattern(queryDocument.where, &whereRegex);
-        QRegularExpression filterRegex;
+        std::regex filterRegex;
         const bool useFilterRegex = tryParseRegexPattern(queryDocument.filter, &filterRegex);
-        auto records = database->getAllRecordsForDocument(queryDocument.doc, queryDocument.from, queryDocument.to, queryDocument.reverse, queryDocument.limit, useWhereRegex ? QString() : queryDocument.where, useFilterRegex ? QString() : queryDocument.filter, useWhereRegex ? &whereRegex : nullptr, useFilterRegex ? &filterRegex : nullptr);
+        auto records = database->getAllRecordsForDocument(queryDocument.doc,
+                                                          queryDocument.from,
+                                                          queryDocument.to,
+                                                          queryDocument.reverse,
+                                                          queryDocument.limit,
+                                                          useWhereRegex ? std::string_view() : std::string_view(queryDocument.where),
+                                                          useFilterRegex ? std::string_view() : std::string_view(queryDocument.filter),
+                                                          useWhereRegex ? &whereRegex : nullptr,
+                                                          useFilterRegex ? &filterRegex : nullptr);
 
         bool first = true;
-        for (const DataRecord *record : records)
+        for (const DataRecord* record : records)
         {
             if (!first)
             {
-                response.append(',');
+                response.push_back(',');
             }
             first = false;
             appendRecordAsJson(response, record);
         }
     }
-    response.append("]}", 2);
-    return QString::fromUtf8(response);
+    response.append("]}");
+    return response;
 }
 
-QString WebSocket::handleDeleteDocument(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleDeleteDocument(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
-    DeleteDocument query = DeleteDocument::fromJson(message.data  , &ok);
+    (void)client;
+    bool ok = false;
+    DeleteDocument query = DeleteDocument::fromJson(message.data, &ok);
     if (!ok)
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid delete document message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
-    QJsonObject obj;
-    obj["id"] = message.id;
-    QJsonDocument doc(obj);
 
-    if (query.col.isEmpty())
+    if (query.col.empty())
     {
-        // Hidden capability: empty collection deletes this document across all collections; SDKs keep this private.
-        QVector<QString> toErase;
-        
-        for (auto &[key, value] : m_databases)
+        std::vector<std::string> toErase;
+        for (auto& [key, value] : m_databases)
         {
             value->clearDocument(query.doc);
             if (value->isEmpty())
             {
-                toErase.append(key);
+                toErase.push_back(key);
             }
         }
-        
-        // Now erase the empty collections
-        foreach (const QString &key, toErase)
-        {            
-            qInfo() << "Deleting collection (1) since there are no more documents:" << key;
+        for (const std::string& key : toErase)
+        {
             m_databases.erase(key);
             if (m_storage != nullptr)
             {
@@ -604,415 +537,331 @@ QString WebSocket::handleDeleteDocument(QWebSocket *client, const MessageRequest
     }
     else
     {
-        auto database = m_databases[query.col].get();
-        if (database == nullptr)
+        Collection* database = collectionFor(query.col, false);
+        if (database != nullptr)
         {
-            m_databases.erase(query.col);   
-            qWarning() << "Collection not found for collection:" << query.col;
-            return doc.toJson(QJsonDocument::Compact);
-        }
-        database->clearDocument(query.doc);
-        
-        if (database->isEmpty())
-        {
-            qInfo() << "Deleting collection (2) since there are no more documents:" << query.col;
-            m_databases.erase(query.col);
-            if (m_storage != nullptr)
+            database->clearDocument(query.doc);
+            if (database->isEmpty())
             {
-                m_storage->deleteCollection(query.col);
+                m_databases.erase(query.col);
+                if (m_storage != nullptr)
+                {
+                    m_storage->deleteCollection(query.col);
+                }
             }
         }
     }
-    return doc.toJson(QJsonDocument::Compact);
+    return JsonHelpers::compactObjectWithId(message.id);
 }
 
-QString WebSocket::handleDeleteCollection(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleDeleteCollection(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
+    (void)client;
+    bool ok = false;
     DeleteCollection query = DeleteCollection::fromJson(message.data, &ok);
     if (!ok)
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid delete collection message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
-    if (m_databases.find(query.col) != m_databases.end())
-    {
-        m_databases.erase(query.col);
-    }
+
+    m_databases.erase(query.col);
     if (m_storage != nullptr)
     {
         m_storage->deleteCollection(query.col);
     }
-
-    QJsonObject obj;
-    obj["id"] = message.id;
-    QJsonDocument doc(obj);
-    return doc.toJson(QJsonDocument::Compact);
+    return JsonHelpers::compactObjectWithId(message.id);
 }
 
-QString WebSocket::handleDeleteRecord(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleDeleteRecord(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
+    (void)client;
+    bool ok = false;
     DeleteRecord query = DeleteRecord::fromJson(message.data, &ok);
-    if (!ok)
+    if (!ok || !query.isValid())
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid delete record message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
-    QJsonObject obj;
-    obj["id"] = message.id;
-    QJsonDocument doc(obj);
 
-    auto database = m_databases[query.col].get();
-    if (database == nullptr)
-    {        m_databases.erase(query.col);
-        return doc.toJson(QJsonDocument::Compact);
+    Collection* database = collectionFor(query.col, false);
+    if (database != nullptr)
+    {
+        database->deleteRecord(query.doc, query.ts);
     }
-    database->deleteRecord(query.doc, query.ts);    
-    return doc.toJson(QJsonDocument::Compact);
+    return JsonHelpers::compactObjectWithId(message.id);
 }
 
-QString WebSocket::handleDeleteMultipleRecords(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleDeleteMultipleRecords(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
+    (void)client;
+    bool ok = false;
     DeleteMultipleRecords query = DeleteMultipleRecords::fromJson(message.data, &ok);
     if (!ok)
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid delete multiple records message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
 
-    QJsonObject obj;
-    obj["id"] = message.id;
-    QJsonDocument doc(obj);
-    foreach (const DeleteRecord &record, query.records)
+    for (const DeleteRecord& record : query.records)
     {
-        auto database = m_databases[record.col].get();
-        if (database == nullptr)
+        Collection* database = collectionFor(record.col, false);
+        if (database != nullptr)
         {
-            m_databases.erase(record.col);   
-        } else {
             database->deleteRecord(record.doc, record.ts);
         }
     }
-    return doc.toJson(QJsonDocument::Compact);
+    return JsonHelpers::compactObjectWithId(message.id);
 }
 
-QString WebSocket::handleDeleteRecordsRange(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleDeleteRecordsRange(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
+    (void)client;
+    bool ok = false;
     DeleteRecordsRange query = DeleteRecordsRange::fromJson(message.data, &ok);
     if (!ok || !query.isValid())
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid delete records range message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
-    
-    QJsonObject obj;
-    obj["id"] = message.id;
-    QJsonDocument doc(obj);
 
-    auto database = m_databases[query.col].get();
-    if (database == nullptr)
+    Collection* database = collectionFor(query.col, false);
+    if (database != nullptr)
     {
-        m_databases.erase(query.col);
-        return doc.toJson(QJsonDocument::Compact);
+        database->deleteRecordsInRange(query.doc, query.fromTs, query.toTs);
     }
-    database->deleteRecordsInRange(query.doc, query.fromTs, query.toTs);
-    return doc.toJson(QJsonDocument::Compact);
+    return JsonHelpers::compactObjectWithId(message.id);
 }
 
-QString WebSocket::handleSetValue(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleSetValue(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
+    (void)client;
+    bool ok = false;
     KeyValue kv = KeyValue::fromJson(message.data, &ok);
     if (!ok || !kv.isValid() || !kv.hasKey() || !kv.hasValue())
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid set value message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
 
-    auto collection = kv.col;
-    auto database = m_databases[collection].get();
-    if (database == nullptr)
-    {
-        m_databases[collection] = std::make_unique<Collection>(collection, m_storage.get());
-        database = m_databases[collection].get();
-    }
-    
+    Collection* database = collectionFor(kv.col, true);
     database->setValueForKey(kv.key, kv.value);
-
-    QJsonObject obj;
-    obj["id"] = message.id;
-    QJsonDocument doc(obj);
-    return doc.toJson(QJsonDocument::Compact);
+    return JsonHelpers::compactObjectWithId(message.id);
 }
 
-QString WebSocket::handleGetValue(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleGetValue(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
+    (void)client;
+    bool ok = false;
     KeyValue kv = KeyValue::fromJson(message.data, &ok);
     if (!ok || !kv.isValid() || !kv.hasKey())
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid get value message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
 
-    auto collection = kv.col;
-    auto database = m_databases[collection].get();
-
-    QByteArray response;
-    response.append("{\"id\":", 6);
+    Collection* database = collectionFor(kv.col, false);
+    std::string response;
+    response.append("{\"id\":");
     appendJsonString(response, message.id);
-    response.append(",\"value\":\"", 10);
-
-    if (database == nullptr)
+    response.append(",\"value\":\"");
+    if (database != nullptr)
     {
-        m_databases.erase(collection);
-    }
-    else
-    {
-        const std::string *value = database->getValueRefForKey(kv.key);
+        const std::string* value = database->getValueRefForKey(kv.key);
         if (value != nullptr)
         {
-            appendJsonEscapedUtf8(response, value->data(), static_cast<qsizetype>(value->size()));
+            appendJsonEscapedUtf8(response, *value);
         }
     }
-    response.append("\"}", 2);
-    return QString::fromUtf8(response);
+    response.append("\"}");
+    return response;
 }
 
-QString WebSocket::handleGetValues(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleGetValues(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
+    (void)client;
+    bool ok = false;
     KeyValue kv = KeyValue::fromJson(message.data, &ok);
     if (!ok || !kv.isValid() || !kv.hasKey())
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid get values message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
 
-    auto collection = kv.col;
-    auto database = m_databases[collection].get();
-
-    QByteArray response;
-    response.append("{\"id\":", 6);
+    Collection* database = collectionFor(kv.col, false);
+    std::string response;
+    response.append("{\"id\":");
     appendJsonString(response, message.id);
-    response.append(",\"values\":", 10);
+    response.append(",\"values\":");
 
     if (database == nullptr)
     {
-        m_databases.erase(collection);
-        response.append("{}", 2);
+        response.append("{}");
     }
     else
     {
-        QRegularExpression keyRegex;
-        const bool useRegex = tryParseRegexPattern(kv.key, &keyRegex);
-        if (useRegex)
+        std::regex keyRegex;
+        if (tryParseRegexPattern(kv.key, &keyRegex))
         {
             database->appendAllValuesAsJson(response, &keyRegex);
         }
         else
         {
-            response.append('{');
+            response.push_back('{');
             appendJsonString(response, kv.key);
-            response.append(":\"", 2);
-            const std::string *value = database->getValueRefForKey(kv.key);
+            response.append(":\"");
+            const std::string* value = database->getValueRefForKey(kv.key);
             if (value != nullptr)
             {
-                appendJsonEscapedUtf8(response, value->data(), static_cast<qsizetype>(value->size()));
+                appendJsonEscapedUtf8(response, *value);
             }
-            response.append("\"}", 2);
+            response.append("\"}");
         }
     }
-    response.append('}');
-    return QString::fromUtf8(response);
+    response.push_back('}');
+    return response;
 }
 
-QString WebSocket::handleRemoveValue(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleRemoveValue(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
+    (void)client;
+    bool ok = false;
     KeyValue kv = KeyValue::fromJson(message.data, &ok);
     if (!ok || !kv.isValid() || !kv.hasKey())
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid remove value message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
 
-    auto collection = kv.col;
-    auto database = m_databases[collection].get();
-    if (database == nullptr) {
-        m_databases.erase(collection);        
-    } else {
+    Collection* database = collectionFor(kv.col, false);
+    if (database != nullptr)
+    {
         database->removeValueForKey(kv.key);
     }
-
-    QJsonObject obj;
-    obj["id"] = message.id;
-    QJsonDocument doc(obj);
-    return doc.toJson(QJsonDocument::Compact);
+    return JsonHelpers::compactObjectWithId(message.id);
 }
 
-QString WebSocket::handleGetAllValues(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleGetAllValues(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
+    (void)client;
+    bool ok = false;
     KeyValue kv = KeyValue::fromJson(message.data, &ok);
     if (!ok || !kv.isValid())
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid get all values message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
 
-    auto collection = kv.col;
-    auto database = m_databases[collection].get();
-
-    QByteArray response;
-    response.append("{\"id\":\"", 7);
-    const QByteArray idUtf8 = message.id.toUtf8();
-    appendJsonEscapedUtf8(response, idUtf8.constData(), idUtf8.size());
-    response.append("\",\"values\":", 11);
-
+    Collection* database = collectionFor(kv.col, false);
+    std::string response;
+    response.append("{\"id\":");
+    appendJsonString(response, message.id);
+    response.append(",\"values\":");
     if (database == nullptr)
     {
-        m_databases.erase(collection);
-        response.append("{}", 2);
+        response.append("{}");
     }
     else
     {
         database->appendAllValuesAsJson(response);
     }
-    response.append('}');
-    return QString::fromUtf8(response);
+    response.push_back('}');
+    return response;
 }
 
-QString WebSocket::handleGetAllKeys(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleGetAllKeys(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    bool ok;
+    (void)client;
+    bool ok = false;
     KeyValue kv = KeyValue::fromJson(message.data, &ok);
     if (!ok || !kv.isValid())
     {
-        qWarning() << QTime::currentTime().toString() << "Closing client for safety: invalid get all keys message format from" << client->peerAddress().toString()
-                   << "ID" << client->objectName() << "Request" << message.id << "Type" << message.type;
-        client->close();
-        return "";
+        closeClient = true;
+        return {};
     }
 
-    auto collection = kv.col;
-    auto database = m_databases[collection].get();
-
-    QByteArray response;
-    response.append("{\"id\":", 6);
+    Collection* database = collectionFor(kv.col, false);
+    std::string response;
+    response.append("{\"id\":");
     appendJsonString(response, message.id);
-    response.append(",\"keys\":", 8);
-
+    response.append(",\"keys\":");
     if (database == nullptr)
     {
-        m_databases.erase(collection);
-        response.append("[]", 2);
+        response.append("[]");
     }
     else
     {
         database->appendAllKeysAsJsonArray(response);
     }
-    response.append('}');
-    return QString::fromUtf8(response);
+    response.push_back('}');
+    return response;
 }
 
-QString WebSocket::handleConnections(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleConnections(const ClientInfo& client, const MessageRequest& message)
 {
-    QJsonObject obj;
-    obj["id"] = message.id;
-    QJsonArray connectionsArray;
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-
-    for (QWebSocket *socket : m_clients)
+    const std::int64_t now = nowMs();
+    std::string response;
+    response.append("{\"id\":");
+    appendJsonString(response, message.id);
+    response.append(",\"connections\":[");
+    bool first = true;
+    for (const auto& [id, info] : m_clients)
     {
-        if (!socket)
+        if (info == nullptr)
         {
             continue;
         }
-        QJsonObject connectionObj;
-        connectionObj["ip"] = socket->peerAddress().toString();
-        QString connectionName;
-        auto nameIt = m_clientNames.find(socket->objectName());
-        if (nameIt != m_clientNames.end())
+        if (!first)
         {
-            connectionName = nameIt->second;
+            response.push_back(',');
         }
-        qint64 connectedAt = now;
-        auto it = m_connectionTimes.find(socket->objectName());
-        if (it != m_connectionTimes.end())
+        first = false;
+        response.append("{\"ip\":");
+        appendJsonString(response, info->ip);
+        response.append(",\"since\":");
+        response.append(std::to_string(now - info->connectedAtMs));
+        response.append(",\"name\":");
+        if (info->name.empty())
         {
-            connectedAt = it->second;
-        }
-        connectionObj["since"] = now - connectedAt;
-        if (connectionName.isEmpty())
-        {
-            connectionObj["name"] = QJsonValue();
+            response.append("null");
         }
         else
         {
-            connectionObj["name"] = connectionName;
+            appendJsonString(response, info->name);
         }
-        connectionObj["self"] = (socket == client);
-        connectionsArray.append(connectionObj);
+        response.append(",\"self\":");
+        response.append(info->id == client.id ? "true" : "false");
+        response.push_back('}');
     }
-
-    obj["connections"] = connectionsArray;
-    QJsonDocument doc(obj);
-    return doc.toJson(QJsonDocument::Compact);
+    response.append("]}");
+    return response;
 }
 
-QString WebSocket::handleManageApiKey(QWebSocket *client, const MessageRequest &message)
+std::string WebSocket::handleManageApiKey(ClientInfo& client, const MessageRequest& message, bool& closeClient)
 {
-    auto clientKeyIt = m_clientKeys.find(client->objectName());
-    if (clientKeyIt == m_clientKeys.end() || clientKeyIt->second != m_masterKey)
+    if (client.apiKey != m_masterKey)
     {
-        QJsonObject response;
+        Json response;
         response["id"] = message.id;
         response["error"] = "only the master key may manage API keys";
-        QJsonDocument responseDoc(response);
-        return responseDoc.toJson(QJsonDocument::Compact);
+        return response.dump();
     }
 
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(message.data.toUtf8(), &error);
-    if (error.error != QJsonParseError::NoError || !doc.isObject())
+    Json payload;
+    if (!JsonHelpers::parse(message.data, payload) || !payload.is_object())
     {
-        qWarning() << "Invalid manage api key message format from" << client->peerAddress().toString();
-        rejectClient(client, QStringLiteral("Invalid manage api key message"));
-        return "";
+        closeClient = true;
+        return {};
     }
 
-    QJsonObject payload = doc.object();
-    QString action = payload.value("action").toString().trimmed().toLower();
-
-    QJsonObject response;
+    const std::string action = normalizeScope(JsonHelpers::stringValue(payload, "action"));
+    Json response;
     response["id"] = message.id;
 
     if (action == "add")
     {
-        const QString key = payload.value("key").toString();
-        const QString scopeString = payload.value("scope").toString();
+        const std::string key = JsonHelpers::stringValue(payload, "key");
+        const std::string scopeString = JsonHelpers::stringValue(payload, "scope");
         ApiKeyScope scopeValue;
         if (!parseScope(scopeString, &scopeValue))
         {
@@ -1020,7 +869,7 @@ QString WebSocket::handleManageApiKey(QWebSocket *client, const MessageRequest &
         }
         else
         {
-            QString errorMessage;
+            std::string errorMessage;
             if (registerApiKey(key, scopeValue, true, &errorMessage))
             {
                 response["status"] = "ok";
@@ -1034,8 +883,8 @@ QString WebSocket::handleManageApiKey(QWebSocket *client, const MessageRequest &
     }
     else if (action == "remove")
     {
-        const QString key = payload.value("key").toString();
-        QString errorMessage;
+        const std::string key = JsonHelpers::stringValue(payload, "key");
+        std::string errorMessage;
         if (removeApiKey(key, &errorMessage))
         {
             response["status"] = "ok";
@@ -1047,25 +896,23 @@ QString WebSocket::handleManageApiKey(QWebSocket *client, const MessageRequest &
     }
     else if (action == "list")
     {
-        QJsonArray keysArray;
-        for (const auto &pair : m_apiKeys)
-        {
-            QJsonObject keyObj;
-            keyObj["key"] = pair.first;
-            keyObj["scope"] = scopeToString(pair.second.scope);
-            keyObj["deletable"] = pair.second.deletable;
-            keysArray.append(keyObj);
-        }
         response["status"] = "ok";
-        response["keys"] = keysArray;
+        response["keys"] = Json::array();
+        for (const auto& [key, entry] : m_apiKeys)
+        {
+            response["keys"].push_back({
+                {"key", key},
+                {"scope", scopeToString(entry.scope)},
+                {"deletable", entry.deletable},
+            });
+        }
     }
     else
     {
         response["error"] = "unknown action";
     }
 
-    QJsonDocument responseDoc(response);
-    return responseDoc.toJson(QJsonDocument::Compact);
+    return response.dump();
 }
 
 bool WebSocket::hasPermission(ApiKeyScope scope, RequiredPermission required) const
@@ -1084,11 +931,10 @@ bool WebSocket::hasPermission(ApiKeyScope scope, RequiredPermission required) co
     case ApiKeyScope::ReadWriteDelete:
         return true;
     }
-
     return false;
 }
 
-WebSocket::RequiredPermission WebSocket::permissionForType(const QString &type) const
+WebSocket::RequiredPermission WebSocket::permissionForType(std::string_view type) const
 {
     if (type == MessageType::Insert || type == MessageType::SetValue)
     {
@@ -1114,92 +960,71 @@ WebSocket::RequiredPermission WebSocket::permissionForType(const QString &type) 
     return RequiredPermission::None;
 }
 
-bool WebSocket::registerApiKey(const QString &key, ApiKeyScope scope, bool deletable, QString *errorMessage, bool persistToStorage)
+bool WebSocket::registerApiKey(std::string_view key, ApiKeyScope scope, bool deletable, std::string* errorMessage, bool persistToStorage)
 {
-    if (key.isEmpty())
+    if (key.empty())
     {
-        if (errorMessage)
+        if (errorMessage != nullptr)
         {
             *errorMessage = "api key cannot be empty";
         }
         return false;
     }
 
-    ApiKeyScope scopeToStore = scope;
-    bool deletableToStore = deletable;
-    if (key == m_masterKey)
-    {
-        scopeToStore = ApiKeyScope::ReadWriteDelete;
-        deletableToStore = false;
-    }
+    const bool isMaster = key == m_masterKey;
+    const ApiKeyScope scopeToStore = isMaster ? ApiKeyScope::ReadWriteDelete : scope;
+    const bool deletableToStore = isMaster ? false : deletable;
+    const std::string keyString(key);
 
-    bool shouldPersist = false;
-    auto it = m_apiKeys.find(key);
+    auto it = m_apiKeys.find(keyString);
     if (it == m_apiKeys.end())
     {
-        m_apiKeys.emplace(key, ApiKeyEntry{scopeToStore, deletableToStore});
-        // Persist all keys except the master key
-        shouldPersist = (key != m_masterKey);
+        m_apiKeys.emplace(keyString, ApiKeyEntry{scopeToStore, deletableToStore});
     }
     else
     {
         it->second.scope = scopeToStore;
-        if (!it->second.deletable)
-        {
-            it->second.deletable = false;
-        }
-        else
-        {
-            it->second.deletable = deletableToStore;
-        }
-        // Persist all keys except the master key
-        shouldPersist = (key != m_masterKey);
+        it->second.deletable = it->second.deletable ? deletableToStore : false;
     }
 
-    const QList<QWebSocket *> currentClients = m_clients;
-    for (QWebSocket *clientSocket : currentClients)
+    for (auto& [id, info] : m_clients)
     {
-        if (!clientSocket)
+        (void)id;
+        if (info != nullptr && info->apiKey == key)
         {
-            continue;
-        }
-        auto clientKeyIt = m_clientKeys.find(clientSocket->objectName());
-        if (clientKeyIt != m_clientKeys.end() && clientKeyIt->second == key)
-        {
-            m_clientScopes[clientSocket->objectName()] = scopeToStore;
+            info->scope = scopeToStore;
         }
     }
-    
-    if (shouldPersist && m_storage != nullptr && persistToStorage)
+
+    if (!isMaster && m_storage != nullptr && persistToStorage)
     {
         if (!m_storage->upsertApiKey(key, scopeToString(scopeToStore), deletableToStore))
         {
-            qWarning() << "Failed to persist API key to SQLite";
+            std::cerr << "Failed to persist API key to SQLite\n";
         }
     }
-    
-    if (errorMessage)
+
+    if (errorMessage != nullptr)
     {
         errorMessage->clear();
     }
     return true;
 }
 
-bool WebSocket::removeApiKey(const QString &key, QString *errorMessage)
+bool WebSocket::removeApiKey(std::string_view key, std::string* errorMessage)
 {
-    auto it = m_apiKeys.find(key);
+    auto it = m_apiKeys.find(std::string(key));
     if (it == m_apiKeys.end())
     {
-        if (errorMessage)
+        if (errorMessage != nullptr)
         {
             *errorMessage = "api key not found";
         }
         return false;
     }
-
     if (!it->second.deletable)
     {
-        if (errorMessage)
+        if (errorMessage != nullptr)
         {
             *errorMessage = "api key cannot be removed";
         }
@@ -1207,19 +1032,12 @@ bool WebSocket::removeApiKey(const QString &key, QString *errorMessage)
     }
 
     m_apiKeys.erase(it);
-
-    const QList<QWebSocket *> currentClients = m_clients;
-    for (QWebSocket *clientSocket : currentClients)
+    for (auto& [id, info] : m_clients)
     {
-        if (!clientSocket)
+        (void)id;
+        if (info != nullptr && info->apiKey == key)
         {
-            continue;
-        }
-
-        auto clientKeyIt = m_clientKeys.find(clientSocket->objectName());
-        if (clientKeyIt != m_clientKeys.end() && clientKeyIt->second == key)
-        {
-            rejectClient(clientSocket, QStringLiteral("API key revoked"));
+            info->scope = ApiKeyScope::ReadOnly;
         }
     }
 
@@ -1227,11 +1045,11 @@ bool WebSocket::removeApiKey(const QString &key, QString *errorMessage)
     {
         if (!m_storage->deleteApiKey(key))
         {
-            qWarning() << "Failed to delete API key from SQLite";
+            std::cerr << "Failed to delete API key from SQLite\n";
         }
     }
 
-    if (errorMessage)
+    if (errorMessage != nullptr)
     {
         errorMessage->clear();
     }
@@ -1242,54 +1060,46 @@ void WebSocket::loadApiKeysFromDisk()
 {
     if (m_storage == nullptr)
     {
-        qInfo() << "SQLite storage unavailable, API keys will not persist";
+        std::cerr << "SQLite storage unavailable, API keys will not persist\n";
         return;
     }
 
-    const auto rows = m_storage->fetchApiKeys();
     int loadedCount = 0;
-    for (const auto &row : rows)
+    for (const auto& row : m_storage->fetchApiKeys())
     {
         ApiKeyScope scope;
         if (!parseScope(row.scope, &scope))
         {
-            qWarning() << "Invalid scope for persisted API key, skipping:" << row.key;
+            std::cerr << "Invalid scope for persisted API key, skipping: " << row.key << '\n';
             continue;
         }
 
         if (row.key == m_masterKey)
         {
-            // Ensure master key always registered with full scope regardless of stored value
             scope = ApiKeyScope::ReadWriteDelete;
         }
 
-        QString errorMessage;
+        std::string errorMessage;
         if (registerApiKey(row.key, scope, row.deletable, &errorMessage, false))
         {
             ++loadedCount;
         }
         else
         {
-            qWarning() << "Failed to load API key:" << row.key << errorMessage;
+            std::cerr << "Failed to load API key: " << row.key << ' ' << errorMessage << '\n';
         }
     }
-    qInfo() << "Loaded" << loadedCount << "API keys from SQLite";
+    std::cerr << "Loaded " << loadedCount << " API keys from SQLite\n";
 }
 
-bool WebSocket::parseScope(const QString &scopeString, ApiKeyScope *scopeOut) const
+bool WebSocket::parseScope(std::string_view scopeString, ApiKeyScope* scopeOut) const
 {
     if (scopeOut == nullptr)
     {
         return false;
     }
 
-    QString normalized = scopeString;
-    normalized = normalized.trimmed().toLower();
-    normalized.remove(' ');
-    normalized.remove(',');
-    normalized.remove('-');
-    normalized.remove('_');
-
+    const std::string normalized = normalizeScope(scopeString);
     if (normalized == "readonly")
     {
         *scopeOut = ApiKeyScope::ReadOnly;
@@ -1308,89 +1118,143 @@ bool WebSocket::parseScope(const QString &scopeString, ApiKeyScope *scopeOut) co
     return false;
 }
 
-QString WebSocket::scopeToString(ApiKeyScope scope) const
+std::string WebSocket::scopeToString(ApiKeyScope scope) const
 {
     switch (scope)
     {
     case ApiKeyScope::ReadOnly:
-        return QStringLiteral("readonly");
+        return "readonly";
     case ApiKeyScope::ReadWrite:
-        return QStringLiteral("read_write");
+        return "read_write";
     case ApiKeyScope::ReadWriteDelete:
-        return QStringLiteral("read_write_delete");
+        return "read_write_delete";
     }
-    return QStringLiteral("unknown");
+    return "unknown";
 }
 
-WebSocket::ApiKeyEntry *WebSocket::lookupApiKey(const QString &key)
+Collection* WebSocket::collectionFor(std::string_view name, bool create)
 {
-    auto it = m_apiKeys.find(key);
-    if (it == m_apiKeys.end())
+    const std::string key(name);
+    auto it = m_databases.find(key);
+    if (it != m_databases.end())
+    {
+        return it->second.get();
+    }
+    if (!create)
     {
         return nullptr;
     }
-    return &it->second;
+
+    auto collection = std::make_unique<Collection>(key, m_storage.get());
+    Collection* raw = collection.get();
+    m_databases.emplace(key, std::move(collection));
+    return raw;
 }
 
-void WebSocket::rejectClient(QWebSocket *socket, const QString &reason)
+WebSocket::ApiKeyEntry* WebSocket::lookupApiKey(std::string_view key)
 {
-    if (!socket)
+    auto it = m_apiKeys.find(std::string(key));
+    return it == m_apiKeys.end() ? nullptr : &it->second;
+}
+
+std::int64_t WebSocket::nowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+void WebSocket::appendJsonString(std::string& out, std::string_view value)
+{
+    out.push_back('"');
+    appendJsonEscapedUtf8(out, value);
+    out.push_back('"');
+}
+
+void WebSocket::appendRecordAsJson(std::string& out, const DataRecord* record)
+{
+    out.append("{\"ts\":");
+    out.append(std::to_string(record->timestamp));
+    out.append(",\"data\":\"");
+    appendJsonEscapedUtf8(out, record->data);
+    out.append("\"}");
+}
+
+bool WebSocket::tryParseRegexPattern(std::string_view candidate, std::regex* regexOut)
+{
+    if (candidate.size() < 2 || candidate.front() != '/')
     {
-        return;
+        return false;
     }
 
-    qWarning() << QTime::currentTime().toString() << "Closing client for safety"
-               << socket->peerAddress().toString() << "ID" << socket->objectName() << ":" << reason;
-
-    m_clientScopes.erase(socket->objectName());
-    m_clientKeys.erase(socket->objectName());
-    m_clientNames.erase(socket->objectName());
-    m_connectionTimes.erase(socket->objectName());
-    m_clientMessageCounts.erase(socket->objectName());
-    m_clients.removeAll(socket);
-    socket->close(QWebSocketProtocol::CloseCodePolicyViolated, reason.left(120));
-    socket->deleteLater();
-}
-
-void WebSocket::socketDisconnected()
-{
-    QWebSocket *client = qobject_cast<QWebSocket *>(sender());
-    if (client)
+    std::size_t closingSlashIndex = std::string_view::npos;
+    bool escaping = false;
+    for (std::size_t i = 1; i < candidate.size(); ++i)
     {
-        const QString clientId = client->objectName();
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        const auto connectedAtIt = m_connectionTimes.find(clientId);
-        const qint64 lifetimeMs = connectedAtIt == m_connectionTimes.end() ? -1 : now - connectedAtIt->second;
-        const auto messageCountIt = m_clientMessageCounts.find(clientId);
-        const quint64 messageCount = messageCountIt == m_clientMessageCounts.end() ? 0 : messageCountIt->second;
-
-        const QWebSocketProtocol::CloseCode closeCode = client->closeCode();
-        const bool cleanClose = closeCode == QWebSocketProtocol::CloseCodeNormal;
-        if (cleanClose) {
-            qInfo() << QTime::currentTime().toString() << "Client disconnected:"
-                     << client->peerAddress().toString()
-                     << "ID" << clientId
-                     << "CloseCode" << closeCode
-                     << "CloseReason" << client->closeReason()
-                     << "LifetimeMs" << lifetimeMs
-                     << "Messages" << messageCount;
-        } else {
-            qWarning() << QTime::currentTime().toString() << "Client disconnected unexpectedly:"
-                       << client->peerAddress().toString()
-                       << "ID" << clientId
-                       << "CloseCode" << closeCode
-                       << "CloseReason" << client->closeReason()
-                       << "SocketError" << client->error()
-                       << "ErrorText" << client->errorString()
-                       << "LifetimeMs" << lifetimeMs
-                       << "Messages" << messageCount;
+        const char ch = candidate[i];
+        if (!escaping && ch == '/')
+        {
+            closingSlashIndex = i;
+            break;
         }
-        m_clientScopes.erase(clientId);
-        m_clientKeys.erase(clientId);
-        m_clientNames.erase(clientId);
-        m_connectionTimes.erase(clientId);
-        m_clientMessageCounts.erase(clientId);
-        m_clients.removeAll(client);
-        client->deleteLater();
+        if (!escaping && ch == '\\')
+        {
+            escaping = true;
+            continue;
+        }
+        escaping = false;
     }
+
+    if (closingSlashIndex == std::string_view::npos)
+    {
+        return false;
+    }
+
+    const std::string pattern(candidate.substr(1, closingSlashIndex - 1));
+    const std::string_view flags = candidate.substr(closingSlashIndex + 1);
+    std::regex::flag_type options = std::regex::ECMAScript;
+    for (char flag : flags)
+    {
+        if (flag == 'i')
+        {
+            options |= std::regex::icase;
+        }
+        else if (flag == 'm' || flag == 's')
+        {
+            continue;
+        }
+        else
+        {
+            std::cerr << "Invalid regex flag " << flag << " in pattern " << candidate << '\n';
+            return false;
+        }
+    }
+
+    try
+    {
+        if (regexOut != nullptr)
+        {
+            *regexOut = std::regex(pattern, options);
+        }
+        return true;
+    }
+    catch (const std::regex_error& error)
+    {
+        std::cerr << "Invalid regex pattern " << candidate << ": " << error.what() << '\n';
+        return false;
+    }
+}
+
+std::string WebSocket::normalizeScope(std::string_view scope)
+{
+    std::string normalized;
+    normalized.reserve(scope.size());
+    for (unsigned char c : scope)
+    {
+        if (c == ' ' || c == ',' || c == '-' || c == '_')
+        {
+            continue;
+        }
+        normalized.push_back(static_cast<char>(std::tolower(c)));
+    }
+    return normalized;
 }

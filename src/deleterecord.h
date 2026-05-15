@@ -1,15 +1,18 @@
 #ifndef DELETERECORD_H
 #define DELETERECORD_H
 
-#include <QString>
-#include <QJsonObject>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include "json_helpers.h"
+
 struct DeleteRecord {
-    QString doc;
-    QString col;
-    qint64 ts;
+    std::string doc;
+    std::string col;
+    std::int64_t ts = 0;
     
-    static DeleteRecord fromJson(const QString& jsonString, bool* ok = nullptr);
-    static DeleteRecord fromJsonObject(const QJsonObject& jsonObject, bool* ok = nullptr);
+    static DeleteRecord fromJson(std::string_view jsonString, bool* ok = nullptr);
+    static DeleteRecord fromJsonObject(const Json& jsonObject, bool* ok = nullptr);
     bool isValid() const;
 };
 

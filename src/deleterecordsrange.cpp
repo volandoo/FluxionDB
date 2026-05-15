@@ -1,57 +1,54 @@
 #include "deleterecordsrange.h"
-#include <QJsonDocument>
-#include <QJsonObject>
+#include <iostream>
 
-DeleteRecordsRange DeleteRecordsRange::fromJsonObject(const QJsonObject& jsonObject, bool* ok) {
+DeleteRecordsRange DeleteRecordsRange::fromJsonObject(const Json& jsonObject, bool* ok) {
     DeleteRecordsRange query;
-    query.doc = jsonObject["doc"].toString();
-    query.col = jsonObject["col"].toString();
-    query.fromTs = jsonObject["fromTs"].toVariant().toLongLong();
-    query.toTs = jsonObject["toTs"].toVariant().toLongLong();
+    if (!jsonObject.is_object())
+    {
+        if (ok) *ok = false;
+        return query;
+    }
+    query.doc = JsonHelpers::stringValue(jsonObject, "doc");
+    query.col = JsonHelpers::stringValue(jsonObject, "col");
+    query.fromTs = JsonHelpers::int64Value(jsonObject, "fromTs");
+    query.toTs = JsonHelpers::int64Value(jsonObject, "toTs");
     if (ok) *ok = true;
     return query;
 }
 
-DeleteRecordsRange DeleteRecordsRange::fromJson(const QString& jsonString, bool* ok) {
+DeleteRecordsRange DeleteRecordsRange::fromJson(std::string_view jsonString, bool* ok) {
     DeleteRecordsRange query;
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(jsonString.toUtf8(), &error);
-    if (error.error != QJsonParseError::NoError) {
-        qWarning() << "JSON parse error:" << error.errorString();
+    Json doc;
+    if (!JsonHelpers::parse(jsonString, doc) || !doc.is_object())
+    {
+        std::cerr << "JSON is not an object\n";
         if (ok) *ok = false;
         return query;
     }
 
-    if (!doc.isObject()) {
-        qWarning() << "JSON is not an object";
-        if (ok) *ok = false;
-        return query;
-    }
-
-    return fromJsonObject(doc.object(), ok);
+    return fromJsonObject(doc, ok);
 }
 
 bool DeleteRecordsRange::isValid() const {
-    if (doc.isEmpty()) {
-        qWarning() << "doc is empty";
+    if (doc.empty()) {
+        std::cerr << "doc is empty\n";
         return false;
     }
-    if (col.isEmpty()) {
-        qWarning() << "col is empty";
+    if (col.empty()) {
+        std::cerr << "col is empty\n";
         return false;
     }
     if (fromTs <= 0) {
-        qWarning() << "fromTs is not positive";
+        std::cerr << "fromTs is not positive\n";
         return false;
     }
     if (toTs <= 0) {
-        qWarning() << "toTs is not positive";
+        std::cerr << "toTs is not positive\n";
         return false;
     }
     if (fromTs > toTs) {
-        qWarning() << "fromTs is greater than toTs";
+        std::cerr << "fromTs is greater than toTs\n";
         return false;
     }
     return true;
 }
-

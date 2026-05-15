@@ -1,34 +1,24 @@
 #include "deletecollection.h"
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonParseError>
-#include <QDebug>
+#include "json_helpers.h"
+#include <iostream>
 
-DeleteCollection DeleteCollection::fromJson(const QString& jsonString, bool* ok)
+DeleteCollection DeleteCollection::fromJson(std::string_view jsonString, bool* ok)
 {
     DeleteCollection query;
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(jsonString.toUtf8(), &error);
-    
-    if (error.error != QJsonParseError::NoError) {
-        qWarning() << "JSON parse error:" << error.errorString();
+    Json doc;
+    if (!JsonHelpers::parse(jsonString, doc) || !doc.is_object())
+    {
+        std::cerr << "JSON is not an object\n";
         if (ok) *ok = false;
         return query;
     }
 
-    if (!doc.isObject()) {
-        qWarning() << "JSON is not an object";
-        if (ok) *ok = false;
-        return query;
-    }
-
-    QJsonObject obj = doc.object();
-    query.col = obj["col"].toString();
+    query.col = JsonHelpers::stringValue(doc, "col");
     if (ok) *ok = query.isValid();
     return query;
 }
 
 bool DeleteCollection::isValid() const
 {
-    return !col.isEmpty();
+    return !col.empty();
 } 

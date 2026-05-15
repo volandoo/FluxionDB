@@ -1,24 +1,28 @@
 #include "querysessionsresponse.h"
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonArray>
+#include "collection.h"
 
-QJsonObject  QuerySessionsResponse::toJson() const
+std::string QuerySessionsResponse::toString() const
 {
-    QJsonObject dataObj;
-    foreach (const QString& key, records.keys()) {
-        dataObj[key] = records[key]->toJson();
+    std::string out;
+    out.append("{\"id\":\"");
+    appendJsonEscapedUtf8(out, id);
+    out.append("\",\"records\":{");
+    bool first = true;
+    for (const auto& [key, record] : records)
+    {
+        if (!first)
+        {
+            out.push_back(',');
+        }
+        first = false;
+        out.push_back('"');
+        appendJsonEscapedUtf8(out, key);
+        out.append("\":{\"ts\":");
+        out.append(std::to_string(record->timestamp));
+        out.append(",\"data\":\"");
+        appendJsonEscapedUtf8(out, record->data);
+        out.append("\"}");
     }
-    
-    QJsonObject obj;
-    obj["id"] = id;
-    obj["records"] = dataObj;
-
-    return obj;
-}
-
-QString QuerySessionsResponse::toString() const
-{
-    QJsonDocument doc(toJson());
-    return doc.toJson(QJsonDocument::Compact);
+    out.append("}}");
+    return out;
 }

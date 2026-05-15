@@ -1,15 +1,18 @@
 #ifndef INSERTREQUEST_H
 #define INSERTREQUEST_H
 
-#include <QString>
-#include <QList>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
 struct InsertRequest {
-    qint64 ts;
-    QString doc;
-    QString data;
-    QString col;
+    std::int64_t ts = 0;
+    std::string doc;
+    std::string data;
+    std::string col;
     
-    static QList<InsertRequest> fromJson(const QString& jsonString, bool* ok = nullptr);
+    static std::vector<InsertRequest> fromJson(std::string_view jsonString, bool* ok = nullptr);
     bool isValid() const;
 };
 

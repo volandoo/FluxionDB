@@ -37,13 +37,15 @@ make build
 SECRET_KEY=YOUR_SECRET_KEY make run
 ```
 
-### Native Build (Qt 6)
+### Native Build (CMake)
 
 ```sh
-qmake6 fluxiondb.pro
-make
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUWEBSOCKETS_ROOT=/path/to/uWebSockets
+cmake --build build -j
 ./fluxiondb --secret-key=YOUR_SECRET_KEY --data=/path/to/data
 ```
+
+The native server build requires C++20, SQLite3, nlohmann/json, zlib, and uWebSockets/uSockets.
 
 Arguments:
 
@@ -337,7 +339,7 @@ See `clients/java/README.md` for installation and `clients/java/DOCUMENTATION.md
 
 -   `make build` – build the Docker image
 -   `SECRET_KEY=dev make run` – run the server in Docker with persistence mounted at `tmp_data/`
--   `qmake6 fluxiondb.pro && make` – native build (requires Qt 6 Core + WebSockets)
+-   `make native` – native CMake build when uWebSockets/uSockets is available
 -   `cd clients/node && npm install && npm run build` – build Node client bundle
 -   `cd clients/go && go test ./...` – run Go client tests
 -   `cd clients/python && pip install -e . && pytest` – run Python client tests
@@ -345,7 +347,7 @@ See `clients/java/README.md` for installation and `clients/java/DOCUMENTATION.md
 
 ### Repository Layout
 
--   `src/` – Qt/C++17 server sources
+-   `src/` – lean C++20 WebSocket server sources
 -   `clients/node/` – Node.js SDK (TypeScript)
 -   `clients/go/` – Go SDK
 -   `clients/python/` – Python SDK

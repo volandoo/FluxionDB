@@ -1,36 +1,24 @@
 #include "querysessions.h"
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonParseError>
-#include <QDebug>
+#include "json_helpers.h"
+#include <iostream>
 
-QuerySessions QuerySessions::fromJson(const QString& jsonString, bool* ok)
+QuerySessions QuerySessions::fromJson(std::string_view jsonString, bool* ok)
 {
     QuerySessions payload;
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(jsonString.toUtf8(), &error);
-    
-    if (error.error != QJsonParseError::NoError) {
-        qWarning() << "JSON parse error:" << error.errorString();
+    Json doc;
+    if (!JsonHelpers::parse(jsonString, doc) || !doc.is_object())
+    {
+        std::cerr << "JSON is not an object\n";
         if (ok) *ok = false;
         return payload;
     }
 
-    if (!doc.isObject()) {
-        qWarning() << "JSON is not an object";
-        if (ok) *ok = false;
-        return payload;
-    }
-
-    QJsonObject obj = doc.object();
-    
-    payload.ts = obj["ts"].toVariant().toLongLong();
-    payload.from = obj["from"].toVariant().toLongLong();
-    payload.doc = obj["doc"].toString();
-    payload.col = obj["col"].toString();
-    payload.where = obj["where"].toString();
-    payload.filter = obj["filter"].toString();
-
+    payload.ts = JsonHelpers::int64Value(doc, "ts");
+    payload.from = JsonHelpers::int64Value(doc, "from");
+    payload.doc = JsonHelpers::stringValue(doc, "doc");
+    payload.col = JsonHelpers::stringValue(doc, "col");
+    payload.where = JsonHelpers::stringValue(doc, "where");
+    payload.filter = JsonHelpers::stringValue(doc, "filter");
 
     if (ok) *ok = payload.isValid();
     return payload;
@@ -38,5 +26,5 @@ QuerySessions QuerySessions::fromJson(const QString& jsonString, bool* ok)
 
 bool QuerySessions::isValid() const
 {
-    return ts > 0 && !col.isEmpty();
+    return ts > 0 && !col.empty();
 } 
