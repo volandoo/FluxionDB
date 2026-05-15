@@ -1,20 +1,22 @@
 #ifndef QUERYDOCUMENT_H
 #define QUERYDOCUMENT_H
 
-#include <QString>
+#include <cstdint>
+#include <string>
+#include <string_view>
 
 struct QueryDocument {
-    qint64 from;
-    qint64 to;
-    qint64 limit;
-    bool reverse;
-    QString doc;
-    QString col;
-    QString where;
-    QString filter;
+    std::int64_t from = 0;
+    std::int64_t to = 0;
+    std::int64_t limit = 0;
+    bool reverse = false;
+    std::string doc;
+    std::string col;
+    std::string where;
+    std::string filter;
 
     
-    static QueryDocument fromJson(const QString& jsonString, bool* ok = nullptr);
+    static QueryDocument fromJson(std::string_view jsonString, bool* ok = nullptr);
     bool isValid() const;
 };
 

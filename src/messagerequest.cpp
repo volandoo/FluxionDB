@@ -1,33 +1,21 @@
 #include "messagerequest.h"
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonParseError>
-#include <QDebug>
+#include "json_helpers.h"
+#include <iostream>
 
-MessageRequest MessageRequest::fromJson(const QString& jsonString, bool* ok)
+MessageRequest MessageRequest::fromJson(std::string_view jsonString, bool* ok)
 {
     MessageRequest msg;
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(jsonString.toUtf8(), &error);
-    
-    if (error.error != QJsonParseError::NoError) {
-        qWarning() << "JSON parse error:" << error.errorString();
+    Json doc;
+    if (!JsonHelpers::parse(jsonString, doc) || !doc.is_object())
+    {
+        std::cerr << "JSON is not an object\n";
         if (ok) *ok = false;
         return msg;
     }
 
-    if (!doc.isObject()) {
-        qWarning() << "JSON is not an object";
-        if (ok) *ok = false;
-        return msg;
-    }
-
-    QJsonObject obj = doc.object();
-    
-    // Extract fields
-    msg.id = obj["id"].toString();
-    msg.type = obj["type"].toString();
-    msg.data = obj["data"].toString();
+    msg.id = JsonHelpers::stringValue(doc, "id");
+    msg.type = JsonHelpers::stringValue(doc, "type");
+    msg.data = JsonHelpers::stringValue(doc, "data");
 
     if (ok) *ok = msg.isValid();
     return msg;
@@ -35,5 +23,5 @@ MessageRequest MessageRequest::fromJson(const QString& jsonString, bool* ok)
 
 bool MessageRequest::isValid() const
 {
-    return !id.isEmpty() && !type.isEmpty() && !data.isEmpty();
+    return !id.empty() && !type.empty() && !data.empty();
 }

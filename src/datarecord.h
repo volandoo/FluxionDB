@@ -1,19 +1,13 @@
 #ifndef DATARECORD_H
 #define DATARECORD_H
 
-#include <QString>
-#include <QJsonObject>
+#include <cstdint>
 #include <string>
 
 struct DataRecord {
-    qint64 timestamp;
-    // using std::string for data since it's half the size of QString
+    std::int64_t timestamp = 0;
     std::string data;
-    bool isNew;
-    
-    QJsonObject toJson() const;
-    QString toString() const;
-
+    bool isNew = false;
 };
 
 #endif // DATARECORD_H 

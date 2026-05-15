@@ -1,31 +1,27 @@
 #include "collection.h"
-#include <QDebug>
-#include <QElapsedTimer>
-#include <QMutexLocker>
+
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <iostream>
 #include <iterator>
 #include <utility>
+
 #include "sqlitestorage.h"
 
-#ifdef __linux__
-#include <malloc.h>
-#endif
-
-void appendJsonEscapedUtf8(QByteArray& out, const char* data, qsizetype size)
+void appendJsonEscapedUtf8(std::string& out, std::string_view data)
 {
-    for (qsizetype i = 0; i < size; ++i)
+    for (unsigned char c : data)
     {
-        const unsigned char c = static_cast<unsigned char>(data[i]);
         switch (c)
         {
-        case '"':  out.append("\\\"", 2); break;
-        case '\\': out.append("\\\\", 2); break;
-        case '\b': out.append("\\b", 2); break;
-        case '\f': out.append("\\f", 2); break;
-        case '\n': out.append("\\n", 2); break;
-        case '\r': out.append("\\r", 2); break;
-        case '\t': out.append("\\t", 2); break;
+        case '"':  out.append("\\\""); break;
+        case '\\': out.append("\\\\"); break;
+        case '\b': out.append("\\b"); break;
+        case '\f': out.append("\\f"); break;
+        case '\n': out.append("\\n"); break;
+        case '\r': out.append("\\r"); break;
+        case '\t': out.append("\\t"); break;
         default:
             if (c < 0x20)
             {
@@ -35,7 +31,7 @@ void appendJsonEscapedUtf8(QByteArray& out, const char* data, qsizetype size)
             }
             else
             {
-                out.append(static_cast<char>(c));
+                out.push_back(static_cast<char>(c));
             }
         }
     }
@@ -43,7 +39,16 @@ void appendJsonEscapedUtf8(QByteArray& out, const char* data, qsizetype size)
 
 namespace {
 
-bool recordPassesPredicates(const DataRecord *record, const std::string &whereText, const std::string &filterText, const QRegularExpression *whereRegex, const QRegularExpression *filterRegex)
+bool regexMatches(const std::regex* regex, std::string_view text)
+{
+    return regex != nullptr && std::regex_search(text.begin(), text.end(), *regex);
+}
+
+bool recordPassesPredicates(const DataRecord* record,
+                            std::string_view whereText,
+                            std::string_view filterText,
+                            const std::regex* whereRegex,
+                            const std::regex* filterRegex)
 {
     const bool hasWhere = whereRegex != nullptr || !whereText.empty();
     const bool hasFilter = filterRegex != nullptr || !filterText.empty();
@@ -52,13 +57,7 @@ bool recordPassesPredicates(const DataRecord *record, const std::string &whereTe
         return true;
     }
 
-    QString regexData;
-    if (whereRegex != nullptr || filterRegex != nullptr)
-    {
-        regexData = QString::fromStdString(record->data);
-    }
-
-    if (whereRegex != nullptr && !whereRegex->match(regexData).hasMatch())
+    if (whereRegex != nullptr && !regexMatches(whereRegex, record->data))
     {
         return false;
     }
@@ -66,7 +65,7 @@ bool recordPassesPredicates(const DataRecord *record, const std::string &whereTe
     {
         return false;
     }
-    if (filterRegex != nullptr && filterRegex->match(regexData).hasMatch())
+    if (filterRegex != nullptr && regexMatches(filterRegex, record->data))
     {
         return false;
     }
@@ -80,74 +79,97 @@ bool recordPassesPredicates(const DataRecord *record, const std::string &whereTe
 
 } // namespace
 
-Collection::Collection(const QString &name, SqliteStorage *storage)
+DataRecord* Collection::RecordPool::create(std::int64_t timestamp, std::string_view data, bool isNew)
 {
-    m_name = name;
-    m_storage = storage;
-    m_hasNewRecords = false;
-}
+    DataRecord* record = nullptr;
+    if (!m_free.empty())
+    {
+        record = m_free.back();
+        m_free.pop_back();
+    }
+    else
+    {
+        if (m_nextIndex >= BlockSize)
+        {
+            m_blocks.emplace_back(std::make_unique<DataRecord[]>(BlockSize));
+            m_nextIndex = 0;
+        }
+        record = &m_blocks.back()[m_nextIndex++];
+    }
 
-Collection::~Collection() {
-    flushToDisk();
-    m_data.clear();
-    m_data.rehash(0);
-#ifdef __linux__
-    malloc_trim(0);
-#endif
-    qInfo() << "Collection deleted from memory" << m_name;    
-}
-
-void Collection::insert(qint64 timestamp, const QString &key, const QString &data)
-{
-    const bool shouldPersist = (m_storage != nullptr);
-    insertInternal(timestamp, key, data, shouldPersist);
-}
-
-void Collection::insertInternal(qint64 timestamp, const QString &key, const QString &data, bool persistToStorage)
-{
-    // Create new record
-    auto record = std::make_unique<DataRecord>();
     record->timestamp = timestamp;
-    record->data = data.toStdString();
-    record->isNew = persistToStorage;
-    const bool shouldMarkNew = record->isNew;
+    record->data.assign(data.data(), data.size());
+    record->isNew = isNew;
+    return record;
+}
 
-    // Get or create vector for this key
-    auto it = m_data.find(key);
+void Collection::RecordPool::release(DataRecord* record)
+{
+    if (record == nullptr)
+    {
+        return;
+    }
+    record->timestamp = 0;
+    record->data.clear();
+    record->isNew = false;
+    m_free.push_back(record);
+}
+
+void Collection::RecordPool::clearFreeList()
+{
+    m_free.clear();
+}
+
+Collection::Collection(std::string name, SqliteStorage* storage)
+    : m_name(std::move(name)), m_storage(storage)
+{
+}
+
+Collection::~Collection()
+{
+    flushToDisk();
+    std::cerr << "Collection deleted from memory " << m_name << '\n';
+}
+
+void Collection::insert(std::int64_t timestamp, std::string_view key, std::string_view data)
+{
+    insertInternal(timestamp, key, data, m_storage != nullptr);
+}
+
+void Collection::insertInternal(std::int64_t timestamp, std::string_view key, std::string_view data, bool persistToStorage)
+{
+    DataRecord* record = m_recordPool.create(timestamp, data, persistToStorage);
+    const bool shouldMarkNew = record->isNew;
+    std::string keyString(key);
+
+    auto it = m_data.find(keyString);
     if (it == m_data.end())
     {
-        std::vector<std::unique_ptr<DataRecord>> newVector;
+        std::vector<DataRecord*> newVector;
+        newVector.push_back(record);
+        m_data.emplace(std::move(keyString), std::move(newVector));
         if (shouldMarkNew)
         {
             m_hasNewRecords = true;
         }
-        newVector.push_back(std::move(record));
-        m_data.emplace(key, std::move(newVector));
         return;
     }
 
-    auto &records = it->second;
-    if (records.empty())
-    {
-        records.push_back(std::move(record));
-        return;
-    }
-
-    // Find the position to insert using binary search
+    auto& records = it->second;
     auto vecIt = std::lower_bound(records.begin(), records.end(), timestamp,
-                                  [](const std::unique_ptr<DataRecord> &a, qint64 b)
+                                  [](const DataRecord* a, std::int64_t b)
                                   {
                                       return a->timestamp < b;
                                   });
 
-    // Check if we found a record with the same timestamp
     if (vecIt != records.end() && (*vecIt)->timestamp == timestamp)
     {
-        *vecIt = std::move(record); // Replace existing record
+        m_recordPool.release(*vecIt);
+        *vecIt = record;
     }
     else
     {
-        records.insert(vecIt, std::move(record)); // Insert at the correct position
+        records.insert(vecIt, record);
     }
 
     if (shouldMarkNew)
@@ -156,71 +178,63 @@ void Collection::insertInternal(qint64 timestamp, const QString &key, const QStr
     }
 }
 
-DataRecord *Collection::getLatestRecordForDocument(const QString &key, qint64 timestamp)
+DataRecord* Collection::getLatestRecordForDocument(std::string_view key, std::int64_t timestamp)
 {
-    auto it = m_data.find(key);
+    auto it = m_data.find(std::string(key));
     if (it == m_data.end())
     {
         return nullptr;
     }
 
     const int index = getLatestRecordIndex(it->second, timestamp);
-    if (index == -1)
-    {
-        return nullptr;
-    }
-
-    return it->second[index].get();
+    return index == -1 ? nullptr : it->second[index];
 }
 
-DataRecord *Collection::getEarliestRecordForDocument(const QString &key, qint64 timestamp)
+DataRecord* Collection::getEarliestRecordForDocument(std::string_view key, std::int64_t timestamp)
 {
-    auto it = m_data.find(key);
+    auto it = m_data.find(std::string(key));
     if (it == m_data.end())
     {
         return nullptr;
     }
 
     const int index = getEarliestRecordIndex(it->second, timestamp);
-    if (index == -1)
-    {
-        return nullptr;
-    }
-
-    return it->second[index].get();
+    return index == -1 ? nullptr : it->second[index];
 }
 
-QHash<QString, DataRecord *> Collection::getAllRecords(qint64 timestamp, const QString &key, qint64 from, const QRegularExpression *keyRegex, const QString &where, const QString &filter, const QRegularExpression *whereRegex, const QRegularExpression *filterRegex)
+Collection::RecordMap Collection::getAllRecords(std::int64_t timestamp,
+                                                std::string_view key,
+                                                std::int64_t from,
+                                                const std::regex* keyRegex,
+                                                std::string_view where,
+                                                std::string_view filter,
+                                                const std::regex* whereRegex,
+                                                const std::regex* filterRegex)
 {
-    QHash<QString, DataRecord *> result;
-    const bool hasRegex = keyRegex != nullptr && keyRegex->isValid();
-    const std::string whereText = where.toStdString();
-    const std::string filterText = filter.toStdString();
-    if (hasRegex || key.isEmpty())
+    RecordMap result;
+    if (keyRegex != nullptr || key.empty())
     {
-        for (const auto &[docKey, records] : m_data)
+        for (const auto& [docKey, records] : m_data)
         {
-            if (hasRegex && !keyRegex->match(docKey).hasMatch())
-            {
-                continue;
-            }
-            if (!key.isEmpty() && docKey != key)
+            if (keyRegex != nullptr && !regexMatches(keyRegex, docKey))
             {
                 continue;
             }
             const int index = getLatestRecordIndex(records, timestamp);
             if (index != -1)
             {
-                auto record = records[index].get();
-                if ((from == 0 || record->timestamp >= from) && recordPassesPredicates(record, whereText, filterText, whereRegex, filterRegex)) {
-                    result.insert(docKey, record);
+                DataRecord* record = records[index];
+                if ((from == 0 || record->timestamp >= from) &&
+                    recordPassesPredicates(record, where, filter, whereRegex, filterRegex))
+                {
+                    result.emplace(docKey, record);
                 }
             }
         }
     }
     else
     {
-        auto it = m_data.find(key);
+        auto it = m_data.find(std::string(key));
         if (it == m_data.end())
         {
             return result;
@@ -228,82 +242,79 @@ QHash<QString, DataRecord *> Collection::getAllRecords(qint64 timestamp, const Q
         const int index = getLatestRecordIndex(it->second, timestamp);
         if (index != -1)
         {
-            auto record = it->second[index].get();
-            if ((from == 0 || record->timestamp >= from) && recordPassesPredicates(record, whereText, filterText, whereRegex, filterRegex)) {
-                result.insert(key, record);
+            DataRecord* record = it->second[index];
+            if ((from == 0 || record->timestamp >= from) &&
+                recordPassesPredicates(record, where, filter, whereRegex, filterRegex))
+            {
+                result.emplace(std::string(key), record);
             }
         }
     }
     return result;
 }
 
-QHash<QString, QList<DataRecord *>> Collection::getSessionData(qint64 from, qint64 to)
+Collection::SessionMap Collection::getSessionData(std::int64_t from, std::int64_t to)
 {
-    QHash<QString, QList<DataRecord *>> result;
-    for (const auto &[key, records] : m_data)
+    SessionMap result;
+    for (const auto& [key, records] : m_data)
     {
         if (from > to)
         {
             continue;
         }
         const int startIndex = getEarliestRecordIndex(records, from);
-        if (startIndex == -1)
-        {
-            continue;
-        }
         const int endIndex = getLatestRecordIndex(records, to);
-            if (endIndex == -1)
+        if (startIndex == -1 || endIndex == -1)
         {
             continue;
         }
+        auto& target = result[key];
+        target.reserve(static_cast<std::size_t>(endIndex - startIndex + 1));
         for (int i = startIndex; i <= endIndex; ++i)
         {
-            result[key].append(records[i].get());
+            target.push_back(records[i]);
         }
     }
     return result;
 }
 
-QList<DataRecord *> Collection::getAllRecordsForDocument(const QString &key, qint64 from, qint64 to, bool reverse, qint64 limit, const QString &where, const QString &filter, const QRegularExpression *whereRegex, const QRegularExpression *filterRegex)
+Collection::RecordList Collection::getAllRecordsForDocument(std::string_view key,
+                                                            std::int64_t from,
+                                                            std::int64_t to,
+                                                            bool reverse,
+                                                            std::int64_t limit,
+                                                            std::string_view where,
+                                                            std::string_view filter,
+                                                            const std::regex* whereRegex,
+                                                            const std::regex* filterRegex)
 {
-    QList<DataRecord *> result;
-    auto it = m_data.find(key);
-    if (it == m_data.end())
-    {
-        return result;
-    }
-
-    if (from > to)
+    RecordList result;
+    auto it = m_data.find(std::string(key));
+    if (it == m_data.end() || from > to)
     {
         return result;
     }
 
     const int startIndex = getEarliestRecordIndex(it->second, from);
-    if (startIndex == -1)
-    {
-        return result;
-    }
-
     const int endIndex = getLatestRecordIndex(it->second, to);
-    if (endIndex == -1)
+    if (startIndex == -1 || endIndex == -1)
     {
         return result;
     }
 
-    const std::string whereText = where.toStdString();
-    const std::string filterText = filter.toStdString();
+    const auto appendIfMatches = [&](DataRecord* record) {
+        if (recordPassesPredicates(record, where, filter, whereRegex, filterRegex))
+        {
+            result.push_back(record);
+        }
+    };
 
     if (reverse)
     {
         for (int i = endIndex; i >= startIndex; --i)
         {
-            DataRecord *record = it->second[i].get();
-            if (!recordPassesPredicates(record, whereText, filterText, whereRegex, filterRegex))
-            {
-                continue;
-            }
-            result.append(record);
-            if (limit > 0 && result.size() >= limit)
+            appendIfMatches(it->second[i]);
+            if (limit > 0 && static_cast<std::int64_t>(result.size()) >= limit)
             {
                 break;
             }
@@ -313,13 +324,8 @@ QList<DataRecord *> Collection::getAllRecordsForDocument(const QString &key, qin
 
     for (int i = startIndex; i <= endIndex; ++i)
     {
-        DataRecord *record = it->second[i].get();
-        if (!recordPassesPredicates(record, whereText, filterText, whereRegex, filterRegex))
-        {
-            continue;
-        }
-        result.append(record);
-        if (limit > 0 && result.size() >= limit)
+        appendIfMatches(it->second[i]);
+        if (limit > 0 && static_cast<std::int64_t>(result.size()) >= limit)
         {
             break;
         }
@@ -328,18 +334,17 @@ QList<DataRecord *> Collection::getAllRecordsForDocument(const QString &key, qin
     return result;
 }
 
-void Collection::clearDocument(const QString &key)
+void Collection::clearDocument(std::string_view key)
 {
-    auto it = m_data.find(key);
+    auto it = m_data.find(std::string(key));
     if (it != m_data.end())
     {
-        std::vector<std::unique_ptr<DataRecord>>{}.swap(it->second);
+        for (DataRecord* record : it->second)
+        {
+            m_recordPool.release(record);
+        }
         m_data.erase(it);
-        m_data.rehash(0);
-#ifdef __linux__
-        malloc_trim(0);
-#endif
-        qInfo() << "Document deleted from memory" << m_name << ":" << key;
+        std::cerr << "Document deleted from memory " << m_name << ':' << key << '\n';
     }
 
     if (m_storage != nullptr)
@@ -348,106 +353,90 @@ void Collection::clearDocument(const QString &key)
     }
 }
 
-void Collection::deleteRecord(const QString &key, qint64 ts)
+void Collection::deleteRecord(std::string_view key, std::int64_t ts)
 {
-    auto it = m_data.find(key);
-    if (it == m_data.end()) {
+    auto it = m_data.find(std::string(key));
+    if (it == m_data.end())
+    {
         return;
     }
-    auto &records = it->second;
+    auto& records = it->second;
     auto vecIt = std::lower_bound(records.begin(), records.end(), ts,
-                                  [](const std::unique_ptr<DataRecord> &a, qint64 b)
+                                  [](const DataRecord* a, std::int64_t b)
                                   {
                                       return a->timestamp < b;
-                                  });   
-    if (vecIt == records.end() || (*vecIt)->timestamp != ts) {
+                                  });
+    if (vecIt == records.end() || (*vecIt)->timestamp != ts)
+    {
         return;
     }
-    records.erase(vecIt);
-    if (records.empty()) {
-        std::vector<std::unique_ptr<DataRecord>>{}.swap(records);
-        m_data.erase(it);
-        m_data.rehash(0);
-#ifdef __linux__
-        malloc_trim(0);
-#endif
-        if (m_storage != nullptr)
-        {
-            m_storage->deleteRecord(m_name, key, ts);
-        }
-        return;
-    }    
 
-    const auto capacity = records.capacity();
-    const auto size = records.size();
-    if (capacity > 0 && size * 3 < capacity)
+    m_recordPool.release(*vecIt);
+    records.erase(vecIt);
+    if (records.empty())
     {
-        std::vector<std::unique_ptr<DataRecord>> compacted;
-        compacted.reserve(size);
+        m_data.erase(it);
+    }
+    else if (records.size() * 3 < records.capacity())
+    {
+        std::vector<DataRecord*> compacted;
+        compacted.reserve(records.size());
         std::move(records.begin(), records.end(), std::back_inserter(compacted));
         records.swap(compacted);
-#ifdef __linux__
-        malloc_trim(0);
-#endif
     }
+
     if (m_storage != nullptr)
     {
         m_storage->deleteRecord(m_name, key, ts);
     }
 }
 
-void Collection::deleteRecordsInRange(const QString &key, qint64 fromTs, qint64 toTs)
+void Collection::deleteRecordsInRange(std::string_view key, std::int64_t fromTs, std::int64_t toTs)
 {
-    auto it = m_data.find(key);
-    if (it == m_data.end()) {
+    auto it = m_data.find(std::string(key));
+    if (it == m_data.end())
+    {
         return;
     }
-    auto &records = it->second;
+    auto& records = it->second;
     
-    // Find the first record >= fromTs
     auto beginIt = std::lower_bound(records.begin(), records.end(), fromTs,
-                                    [](const std::unique_ptr<DataRecord> &a, qint64 b)
+                                    [](const DataRecord* a, std::int64_t b)
                                     {
                                         return a->timestamp < b;
                                     });
-    
-    // Find the first record > toTs
     auto endIt = std::upper_bound(records.begin(), records.end(), toTs,
-                                  [](qint64 b, const std::unique_ptr<DataRecord> &a)
+                                  [](std::int64_t b, const DataRecord* a)
                                   {
                                       return b < a->timestamp;
                                   });
     
-    if (beginIt == records.end() || beginIt >= endIt) {
+    if (beginIt == records.end() || beginIt >= endIt)
+    {
         return;
     }
-    
+
+    for (auto iter = beginIt; iter != endIt; ++iter)
+    {
+        m_recordPool.release(*iter);
+    }
     records.erase(beginIt, endIt);
-    if (records.empty()) {
-        std::vector<std::unique_ptr<DataRecord>>{}.swap(records);
+    if (records.empty())
+    {
         m_data.erase(it);
-        m_data.rehash(0);
-#ifdef __linux__
-        malloc_trim(0);
-#endif
-        if (m_storage != nullptr)
-        {
-            m_storage->deleteRecordsInRange(m_name, key, fromTs, toTs);
-        }
-        return;
     }
-    
-    records.shrink_to_fit();
-#ifdef __linux__
-    malloc_trim(0);
-#endif
+    else
+    {
+        records.shrink_to_fit();
+    }
+
     if (m_storage != nullptr)
     {
         m_storage->deleteRecordsInRange(m_name, key, fromTs, toTs);
     }
 }
 
-int Collection::getLatestRecordIndex(const std::vector<std::unique_ptr<DataRecord>> &records, qint64 timestamp)
+int Collection::getLatestRecordIndex(const std::vector<DataRecord*>& records, std::int64_t timestamp) const
 {
     if (records.empty())
     {
@@ -455,27 +444,21 @@ int Collection::getLatestRecordIndex(const std::vector<std::unique_ptr<DataRecor
     }
 
     auto vecIt = std::upper_bound(records.begin(), records.end(), timestamp,
-                                  [](qint64 b, const std::unique_ptr<DataRecord> &a)
+                                  [](std::int64_t b, const DataRecord* a)
                                   {
                                       return b < a->timestamp;
                                   });
 
     if (vecIt == records.begin())
     {
-        if (records.front()->timestamp > timestamp)
-        {
-            return -1;
-        }
-    }
-    else
-    {
-        --vecIt;
+        return records.front()->timestamp > timestamp ? -1 : 0;
     }
 
-    return vecIt - records.begin();
+    --vecIt;
+    return static_cast<int>(vecIt - records.begin());
 }
 
-int Collection::getEarliestRecordIndex(const std::vector<std::unique_ptr<DataRecord>> &records, qint64 timestamp)
+int Collection::getEarliestRecordIndex(const std::vector<DataRecord*>& records, std::int64_t timestamp) const
 {
     if (records.empty())
     {
@@ -483,192 +466,160 @@ int Collection::getEarliestRecordIndex(const std::vector<std::unique_ptr<DataRec
     }
 
     auto vecIt = std::lower_bound(records.begin(), records.end(), timestamp,
-                                  [](const std::unique_ptr<DataRecord> &a, qint64 b)
+                                  [](const DataRecord* a, std::int64_t b)
                                   {
                                       return a->timestamp < b;
                                   });
 
-    if (vecIt == records.end())
-    {
-        return -1;
-    }
-
-    return vecIt - records.begin();
+    return vecIt == records.end() ? -1 : static_cast<int>(vecIt - records.begin());
 }
 
-// key value methods
-
-void Collection::setValueForKey(const QString &key, const QString &value)
+void Collection::setValueForKey(std::string_view key, std::string_view value)
 {
-    m_key_vaue[key] = value.toStdString();
+    m_key_value[std::string(key)] = std::string(value);
     if (m_storage != nullptr)
     {
         m_storage->upsertKeyValue(m_name, key, value);
     }
 }
 
-QString Collection::getValueForKey(const QString &key)
+std::string Collection::getValueForKey(std::string_view key) const
 {
-    auto it = m_key_vaue.find(key);
-    if (it == m_key_vaue.end())
-    {
-        return "";
-    }
-    return QString::fromStdString(it->second);
+    auto it = m_key_value.find(std::string(key));
+    return it == m_key_value.end() ? std::string() : it->second;
 }
 
-const std::string* Collection::getValueRefForKey(const QString &key) const
+const std::string* Collection::getValueRefForKey(std::string_view key) const
 {
-    auto it = m_key_vaue.find(key);
-    if (it == m_key_vaue.end())
-    {
-        return nullptr;
-    }
-    return &it->second;
+    auto it = m_key_value.find(std::string(key));
+    return it == m_key_value.end() ? nullptr : &it->second;
 }
 
-void Collection::removeValueForKey(const QString &key)
+void Collection::removeValueForKey(std::string_view key)
 {
-    m_key_vaue.erase(key);
-    m_key_vaue.rehash(0);
-#ifdef __linux__
-    malloc_trim(0);
-#endif
+    m_key_value.erase(std::string(key));
     if (m_storage != nullptr)
     {
         m_storage->removeKeyValue(m_name, key);
     }
 }
 
-QHash<QString, QString> Collection::getAllValues(const QRegularExpression *keyRegex)
+std::unordered_map<std::string, std::string> Collection::getAllValues(const std::regex* keyRegex) const
 {
-    QHash<QString, QString> result;
-    const bool hasRegex = keyRegex != nullptr && keyRegex->isValid();
-    for (auto &[key, value] : m_key_vaue)
+    std::unordered_map<std::string, std::string> result;
+    for (const auto& [key, value] : m_key_value)
     {
-        if (hasRegex && !keyRegex->match(key).hasMatch())
+        if (keyRegex != nullptr && !regexMatches(keyRegex, key))
         {
             continue;
         }
-        result.insert(key, QString::fromStdString(value));
+        result.emplace(key, value);
     }
     return result;
 }
 
-void Collection::appendAllValuesAsJson(QByteArray &out, const QRegularExpression *keyRegex)
+void Collection::appendAllValuesAsJson(std::string& out, const std::regex* keyRegex) const
 {
-    const bool hasRegex = keyRegex != nullptr && keyRegex->isValid();
-    out.append('{');
+    out.push_back('{');
     bool first = true;
-    for (const auto &[key, value] : m_key_vaue)
+    for (const auto& [key, value] : m_key_value)
     {
-        if (hasRegex && !keyRegex->match(key).hasMatch())
+        if (keyRegex != nullptr && !regexMatches(keyRegex, key))
         {
             continue;
         }
         if (!first)
         {
-            out.append(',');
+            out.push_back(',');
         }
         first = false;
-        const QByteArray keyUtf8 = key.toUtf8();
-        out.append('"');
-        appendJsonEscapedUtf8(out, keyUtf8.constData(), keyUtf8.size());
-        out.append("\":\"", 3);
-        appendJsonEscapedUtf8(out, value.data(), static_cast<qsizetype>(value.size()));
-        out.append('"');
+        out.push_back('"');
+        appendJsonEscapedUtf8(out, key);
+        out.append("\":\"");
+        appendJsonEscapedUtf8(out, value);
+        out.push_back('"');
     }
-    out.append('}');
+    out.push_back('}');
 }
 
-QList<QString> Collection::getAllKeys()
+std::vector<std::string> Collection::getAllKeys() const
 {
-    QList<QString> result;
-    for (auto &[key, value] : m_key_vaue)
+    std::vector<std::string> result;
+    result.reserve(m_key_value.size());
+    for (const auto& [key, value] : m_key_value)
     {
-        result.append(key);
+        (void)value;
+        result.push_back(key);
     }
     return result;
 }
 
-void Collection::appendAllKeysAsJsonArray(QByteArray &out)
+void Collection::appendAllKeysAsJsonArray(std::string& out) const
 {
-    out.append('[');
+    out.push_back('[');
     bool first = true;
-    for (const auto &[key, value] : m_key_vaue)
+    for (const auto& [key, value] : m_key_value)
     {
         (void)value;
         if (!first)
         {
-            out.append(',');
+            out.push_back(',');
         }
         first = false;
-        const QByteArray keyUtf8 = key.toUtf8();
-        out.append('"');
-        appendJsonEscapedUtf8(out, keyUtf8.constData(), keyUtf8.size());
-        out.append('"');
+        out.push_back('"');
+        appendJsonEscapedUtf8(out, key);
+        out.push_back('"');
     }
-    out.append(']');
+    out.push_back(']');
 }
 
 void Collection::flushToDisk()
 {
-    QElapsedTimer timer;
-    timer.start();
-
-    QMutexLocker locker(&m_flushMutex);
-
-    if (m_storage == nullptr) {
-        return;
-    }
-
-    if (!m_hasNewRecords)
+    std::lock_guard<std::mutex> locker(m_flushMutex);
+    if (m_storage == nullptr || !m_hasNewRecords)
     {
         return;
     }
 
-    const bool startedTransaction = m_storage->beginTransaction();
-    if (!startedTransaction)
+    const auto startedAt = std::chrono::steady_clock::now();
+    if (!m_storage->beginTransaction())
     {
-        qWarning() << "Failed to start transaction for flushing collection" << m_name;
+        std::cerr << "Failed to start transaction for flushing collection " << m_name << '\n';
         return;
     }
+
     bool keepFlushing = false;
     int count = 0;
-    for (auto &[doc, records] : m_data)
+    for (auto& [doc, records] : m_data)
     {
-        for (auto &record : records)
+        for (DataRecord* record : records)
         {
-            if (!record->isNew)
+            if (!record->isNew || doc.empty())
             {
                 continue;
             }
-            if (doc.isEmpty()) 
-            {
-                continue;
-            }
-            if (m_storage->upsertRecord(m_name, doc, record->timestamp, QString::fromStdString(record->data)))
+            if (m_storage->upsertRecord(m_name, doc, record->timestamp, record->data))
             {
                 record->isNew = false;
-                count++;
+                ++count;
             }
             else
             {
-                qWarning() << "Failed to upsert record for collection" << m_name << "doc" << doc << "timestamp" << record->timestamp;
+                std::cerr << "Failed to upsert record for collection " << m_name
+                          << " doc " << doc << " timestamp " << record->timestamp << '\n';
                 keepFlushing = true;
             }
         }
     }
-    if (!keepFlushing)
+
+    m_hasNewRecords = keepFlushing;
+    if (keepFlushing)
     {
         m_hasNewRecords = false;
-    }
-    else
-    {
-        m_hasNewRecords = false;
-        for (const auto &[doc, records] : m_data)
+        for (const auto& [doc, records] : m_data)
         {
-            for (const auto &record : records)
+            (void)doc;
+            for (const DataRecord* record : records)
             {
                 if (record->isNew)
                 {
@@ -683,15 +634,15 @@ void Collection::flushToDisk()
         }
     }
 
-    if (startedTransaction)
+    if (!m_storage->commitTransaction())
     {
-        if (!m_storage->commitTransaction())
-        {
-            m_storage->rollbackTransaction();
-        }
+        m_storage->rollbackTransaction();
     }
-    const qint64 elapsedNs = timer.nsecsElapsed();
-    qInfo() << "Flushed" << count << "new records to SQLite for collection" << m_name << "in" << elapsedNs << "ns";
+
+    const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - startedAt).count();
+    std::cerr << "Flushed " << count << " new records to SQLite for collection "
+              << m_name << " in " << elapsedNs << " ns\n";
 }
 
 void Collection::loadFromDisk()
@@ -701,23 +652,22 @@ void Collection::loadFromDisk()
         return;
     }
 
-    qDebug() << "Loading collection from SQLite" << m_name;
+    std::cerr << "Loading collection from SQLite " << m_name << '\n';
     m_data.clear();
-    m_data.rehash(0);
-    m_key_vaue.clear();
-    m_key_vaue.rehash(0);
+    m_key_value.clear();
+    m_recordPool.clearFreeList();
     m_hasNewRecords = false;
 
     const auto records = m_storage->fetchRecords(m_name);
-    for (const auto &record : records)
+    for (const auto& record : records)
     {
         insertInternal(record.timestamp, record.document, record.data, false);
     }
 
     const auto keyValues = m_storage->fetchKeyValues(m_name);
-    for (const auto &kv : keyValues)
+    for (const auto& kv : keyValues)
     {
-        m_key_vaue[kv.key] = kv.value.toStdString();
+        m_key_value[kv.key] = kv.value;
     }
-    qDebug() << "Done loading collection from SQLite" << m_name;
+    std::cerr << "Done loading collection from SQLite " << m_name << '\n';
 }

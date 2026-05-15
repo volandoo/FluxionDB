@@ -1,37 +1,26 @@
 #include "querydocument.h"
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonParseError>
-#include <QDebug>
+#include "json_helpers.h"
+#include <iostream>
 
-QueryDocument QueryDocument::fromJson(const QString& jsonString, bool* ok)
+QueryDocument QueryDocument::fromJson(std::string_view jsonString, bool* ok)
 {
     QueryDocument query;
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(jsonString.toUtf8(), &error);
-    
-    if (error.error != QJsonParseError::NoError) {
-        qWarning() << "JSON parse error:" << error.errorString();
+    Json doc;
+    if (!JsonHelpers::parse(jsonString, doc) || !doc.is_object())
+    {
+        std::cerr << "JSON is not an object\n";
         if (ok) *ok = false;
         return query;
     }
 
-    if (!doc.isObject()) {
-        qWarning() << "JSON is not an object";
-        if (ok) *ok = false;
-        return query;
-    }
-
-    QJsonObject obj = doc.object();    
-    // Extract fields
-    query.from = obj["from"].toVariant().toLongLong();
-    query.to = obj["to"].toVariant().toLongLong();
-    query.doc = obj["doc"].toString();
-    query.col = obj["col"].toString();
-    query.limit = obj["limit"].toVariant().toLongLong();
-    query.reverse = obj["reverse"].toVariant().toBool();
-    query.where = obj["where"].toString();
-    query.filter = obj["filter"].toString();
+    query.from = JsonHelpers::int64Value(doc, "from");
+    query.to = JsonHelpers::int64Value(doc, "to");
+    query.doc = JsonHelpers::stringValue(doc, "doc");
+    query.col = JsonHelpers::stringValue(doc, "col");
+    query.limit = JsonHelpers::int64Value(doc, "limit");
+    query.reverse = JsonHelpers::boolValue(doc, "reverse");
+    query.where = JsonHelpers::stringValue(doc, "where");
+    query.filter = JsonHelpers::stringValue(doc, "filter");
 
     if (ok) *ok = query.isValid();
     return query;
@@ -39,5 +28,5 @@ QueryDocument QueryDocument::fromJson(const QString& jsonString, bool* ok)
 
 bool QueryDocument::isValid() const
 {
-    return to > 0 && from <= to && !doc.isEmpty() && !col.isEmpty();
+    return to > 0 && from <= to && !doc.empty() && !col.empty();
 } 

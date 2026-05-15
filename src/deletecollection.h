@@ -1,12 +1,13 @@
 #ifndef QUERYDELETECOLLECTION_H
 #define QUERYDELETECOLLECTION_H
 
-#include <QString>
+#include <string>
+#include <string_view>
 
 struct DeleteCollection {
-    QString col;
+    std::string col;
     
-    static DeleteCollection fromJson(const QString& jsonString, bool* ok = nullptr);
+    static DeleteCollection fromJson(std::string_view jsonString, bool* ok = nullptr);
     bool isValid() const;
 };
 

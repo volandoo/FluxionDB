@@ -1,14 +1,15 @@
 #ifndef KEYVALUE_H
 #define KEYVALUE_H
 
-#include <QString>
+#include <string>
+#include <string_view>
 
 struct KeyValue {
-    QString key;
-    QString value;
-    QString col;
+    std::string key;
+    std::string value;
+    std::string col;
     
-    static KeyValue fromJson(const QString& jsonString, bool* ok = nullptr);
+    static KeyValue fromJson(std::string_view jsonString, bool* ok = nullptr);
     bool isValid() const;
     bool hasValue() const;
     bool hasKey() const;

@@ -1,46 +1,37 @@
 #include "deletemultiplerecords.h"
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonArray>
+#include "json_helpers.h"
+#include <iostream>
 
-
-DeleteMultipleRecords DeleteMultipleRecords::fromJson(const QString& jsonString, bool* ok) {
+DeleteMultipleRecords DeleteMultipleRecords::fromJson(std::string_view jsonString, bool* ok) {
     DeleteMultipleRecords query;
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(jsonString.toUtf8(), &error);
-
-    if (error.error != QJsonParseError::NoError) {
-        qWarning() << "JSON parse error:" << error.errorString();
+    Json doc;
+    if (!JsonHelpers::parse(jsonString, doc) || !doc.is_array())
+    {
+        std::cerr << "JSON is not an array\n";
         if (ok) *ok = false;
         return query;
     }
 
-    if (!doc.isArray()) {
-        qWarning() << "JSON is not an array";
-        if (ok) *ok = false;
-        return query;
-    }
-
-    QJsonArray array = doc.array();
-    for (const QJsonValue& value : array) {
-        if (!value.isObject()) {
-            qWarning() << "JSON is not an object";
+    query.records.reserve(doc.size());
+    for (const Json& value : doc) {
+        if (!value.is_object()) {
+            std::cerr << "JSON is not an object\n";
             if (ok) *ok = false;
             return query;
         }
-        QJsonObject obj = value.toObject();
-        DeleteRecord record = DeleteRecord::fromJsonObject(obj, ok);
-        if (!ok || !record.isValid()) {
-            qWarning() << "Invalid delete record object";
+        bool recordOk = false;
+        DeleteRecord record = DeleteRecord::fromJsonObject(value, &recordOk);
+        if (!recordOk || !record.isValid()) {
+            std::cerr << "Invalid delete record object\n";
             if (ok) *ok = false;
             return query;
         }
-        query.records.append(record);
+        query.records.push_back(std::move(record));
     }
     if (ok) *ok = true;
     return query;
 }
 
 bool DeleteMultipleRecords::isValid() const {
-    return !records.isEmpty();
+    return !records.empty();
 }

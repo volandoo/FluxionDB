@@ -1,13 +1,12 @@
 #ifndef DATARECORDHEADER_H
 #define DATARECORDHEADER_H
 
-#include <QString>
-#include <QList>
+#include <vector>
 #include "datarecord.h"
 
 struct DataRecordHeader {
-    QList<DataRecord*> records;
-    bool hasChanged;
+    std::vector<DataRecord*> records;
+    bool hasChanged = false;
 };
 
 #endif // DATARECORDHEADER_H 

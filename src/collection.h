@@ -1,45 +1,64 @@
 #ifndef COLLECTION_H
 #define COLLECTION_H
 
-#include <QString>
-#include <QHash>
-#include <QByteArray>
-#include <QRegularExpression>
-#include <QMutex>
-#include <vector>
-#include <unordered_map>
+#include <cstdint>
 #include <memory>
+#include <mutex>
+#include <regex>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
 #include "datarecord.h"
 
 class SqliteStorage;
 
-void appendJsonEscapedUtf8(QByteArray& out, const char* data, qsizetype size);
+void appendJsonEscapedUtf8(std::string& out, std::string_view data);
 
 class Collection {
 public:
-    explicit Collection(const QString& name, SqliteStorage* storage);
+    using RecordMap = std::unordered_map<std::string, DataRecord*>;
+    using RecordList = std::vector<DataRecord*>;
+    using SessionMap = std::unordered_map<std::string, std::vector<DataRecord*>>;
+
+    explicit Collection(std::string name, SqliteStorage* storage);
     ~Collection();
 
-    void insert(qint64 timestamp, const QString& key, const QString& data);
-    DataRecord* getLatestRecordForDocument(const QString& key, qint64 timestamp);
-    DataRecord* getEarliestRecordForDocument(const QString& key, qint64 timestamp);
-    QHash<QString, DataRecord*> getAllRecords(qint64 timestamp, const QString& key, qint64 from = 0, const QRegularExpression* keyRegex = nullptr, const QString& where = QString(), const QString& filter = QString(), const QRegularExpression* whereRegex = nullptr, const QRegularExpression* filterRegex = nullptr);
-    QList<DataRecord*> getAllRecordsForDocument(const QString& key, qint64 from, qint64 to, bool reverse = false, qint64 limit = 0, const QString& where = QString(), const QString& filter = QString(), const QRegularExpression* whereRegex = nullptr, const QRegularExpression* filterRegex = nullptr);
-    QHash<QString, QList<DataRecord*>> getSessionData(qint64 from, qint64 to);
+    void insert(std::int64_t timestamp, std::string_view key, std::string_view data);
+    DataRecord* getLatestRecordForDocument(std::string_view key, std::int64_t timestamp);
+    DataRecord* getEarliestRecordForDocument(std::string_view key, std::int64_t timestamp);
+    RecordMap getAllRecords(std::int64_t timestamp,
+                            std::string_view key,
+                            std::int64_t from = 0,
+                            const std::regex* keyRegex = nullptr,
+                            std::string_view where = {},
+                            std::string_view filter = {},
+                            const std::regex* whereRegex = nullptr,
+                            const std::regex* filterRegex = nullptr);
+    RecordList getAllRecordsForDocument(std::string_view key,
+                                        std::int64_t from,
+                                        std::int64_t to,
+                                        bool reverse = false,
+                                        std::int64_t limit = 0,
+                                        std::string_view where = {},
+                                        std::string_view filter = {},
+                                        const std::regex* whereRegex = nullptr,
+                                        const std::regex* filterRegex = nullptr);
+    SessionMap getSessionData(std::int64_t from, std::int64_t to);
     
-    void setValueForKey(const QString& key, const QString& value);
-    QString getValueForKey(const QString& key);
-    const std::string* getValueRefForKey(const QString& key) const;
-    void removeValueForKey(const QString& key);
-    QHash<QString, QString> getAllValues(const QRegularExpression* keyRegex = nullptr);
-    void appendAllValuesAsJson(QByteArray& out, const QRegularExpression* keyRegex = nullptr);
-    QList<QString> getAllKeys();
-    void appendAllKeysAsJsonArray(QByteArray& out);
+    void setValueForKey(std::string_view key, std::string_view value);
+    std::string getValueForKey(std::string_view key) const;
+    const std::string* getValueRefForKey(std::string_view key) const;
+    void removeValueForKey(std::string_view key);
+    std::unordered_map<std::string, std::string> getAllValues(const std::regex* keyRegex = nullptr) const;
+    void appendAllValuesAsJson(std::string& out, const std::regex* keyRegex = nullptr) const;
+    std::vector<std::string> getAllKeys() const;
+    void appendAllKeysAsJsonArray(std::string& out) const;
 
-
-    void clearDocument(const QString& key);
-    void deleteRecord(const QString& key, qint64 ts);
-    void deleteRecordsInRange(const QString& key, qint64 fromTs, qint64 toTs);
+    void clearDocument(std::string_view key);
+    void deleteRecord(std::string_view key, std::int64_t ts);
+    void deleteRecordsInRange(std::string_view key, std::int64_t fromTs, std::int64_t toTs);
     void flushToDisk();
     void loadFromDisk();
     bool isEmpty() const {
@@ -47,16 +66,30 @@ public:
     }
 
 private:
-    void insertInternal(qint64 timestamp, const QString& key, const QString& data, bool persistToStorage);
-    int getLatestRecordIndex(const std::vector<std::unique_ptr<DataRecord>>& records, qint64 timestamp);
-    int getEarliestRecordIndex(const std::vector<std::unique_ptr<DataRecord>>& records, qint64 timestamp);
+    class RecordPool {
+    public:
+        DataRecord* create(std::int64_t timestamp, std::string_view data, bool isNew);
+        void release(DataRecord* record);
+        void clearFreeList();
+
+    private:
+        static constexpr std::size_t BlockSize = 4096;
+        std::vector<std::unique_ptr<DataRecord[]>> m_blocks;
+        std::vector<DataRecord*> m_free;
+        std::size_t m_nextIndex = BlockSize;
+    };
+
+    void insertInternal(std::int64_t timestamp, std::string_view key, std::string_view data, bool persistToStorage);
+    int getLatestRecordIndex(const std::vector<DataRecord*>& records, std::int64_t timestamp) const;
+    int getEarliestRecordIndex(const std::vector<DataRecord*>& records, std::int64_t timestamp) const;
     
-    QString m_name;
-    std::unordered_map<QString, std::vector<std::unique_ptr<DataRecord>>> m_data;
-    std::unordered_map<QString, std::string> m_key_vaue;
-    SqliteStorage* m_storage;
-    bool m_hasNewRecords;
-    QMutex m_flushMutex;
+    std::string m_name;
+    std::unordered_map<std::string, std::vector<DataRecord*>> m_data;
+    std::unordered_map<std::string, std::string> m_key_value;
+    RecordPool m_recordPool;
+    SqliteStorage* m_storage = nullptr;
+    bool m_hasNewRecords = false;
+    std::mutex m_flushMutex;
 };
 
-#endif // COLLECTION_H 
+#endif // COLLECTION_H

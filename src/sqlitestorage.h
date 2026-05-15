@@ -1,57 +1,57 @@
 #ifndef SQLITESTORAGE_H
 #define SQLITESTORAGE_H
 
-#include <QString>
-#include <QStringList>
-#include <QVector>
-#include <QSqlDatabase>
-
-class QSqlQuery;
+#include <cstdint>
+#include <sqlite3.h>
+#include <string>
+#include <string_view>
+#include <vector>
 
 class SqliteStorage
 {
 public:
     struct StoredRecord
     {
-        QString document;
-        qint64 timestamp;
-        QString data;
+        std::string document;
+        std::int64_t timestamp = 0;
+        std::string data;
     };
 
     struct StoredKeyValue
     {
-        QString key;
-        QString value;
+        std::string key;
+        std::string value;
     };
-
-    SqliteStorage();
-    ~SqliteStorage();
-
-    bool initialize(const QString &dataFolder);
-    void shutdown();
-    bool isOpen() const;
-
-    QStringList collections() const;
-    QVector<StoredRecord> fetchRecords(const QString &collection) const;
-    QVector<StoredKeyValue> fetchKeyValues(const QString &collection) const;
-
-    bool upsertRecord(const QString &collection, const QString &document, qint64 timestamp, const QString &data);
-    bool deleteRecord(const QString &collection, const QString &document, qint64 timestamp);
-    bool deleteRecordsInRange(const QString &collection, const QString &document, qint64 fromTs, qint64 toTs);
-    bool deleteDocument(const QString &collection, const QString &document);
-    bool deleteCollection(const QString &collection);
-    bool upsertKeyValue(const QString &collection, const QString &key, const QString &value);
-    bool removeKeyValue(const QString &collection, const QString &key);
 
     struct ApiKeyRow
     {
-        QString key;
-        QString scope;
-        bool deletable;
+        std::string key;
+        std::string scope;
+        bool deletable = false;
     };
-    bool upsertApiKey(const QString &key, const QString &scope, bool deletable);
-    bool deleteApiKey(const QString &key);
-    QVector<ApiKeyRow> fetchApiKeys() const;
+
+    SqliteStorage() = default;
+    ~SqliteStorage();
+
+    bool initialize(std::string_view dataFolder);
+    void shutdown();
+    bool isOpen() const;
+
+    std::vector<std::string> collections() const;
+    std::vector<StoredRecord> fetchRecords(std::string_view collection) const;
+    std::vector<StoredKeyValue> fetchKeyValues(std::string_view collection) const;
+
+    bool upsertRecord(std::string_view collection, std::string_view document, std::int64_t timestamp, std::string_view data);
+    bool deleteRecord(std::string_view collection, std::string_view document, std::int64_t timestamp);
+    bool deleteRecordsInRange(std::string_view collection, std::string_view document, std::int64_t fromTs, std::int64_t toTs);
+    bool deleteDocument(std::string_view collection, std::string_view document);
+    bool deleteCollection(std::string_view collection);
+    bool upsertKeyValue(std::string_view collection, std::string_view key, std::string_view value);
+    bool removeKeyValue(std::string_view collection, std::string_view key);
+
+    bool upsertApiKey(std::string_view key, std::string_view scope, bool deletable);
+    bool deleteApiKey(std::string_view key);
+    std::vector<ApiKeyRow> fetchApiKeys() const;
     bool beginTransaction();
     bool commitTransaction();
     void rollbackTransaction();
@@ -59,12 +59,13 @@ public:
 
 private:
     bool ensureSchema();
-    void logError(const QSqlQuery &query, const QString &context) const;
+    bool exec(std::string_view sql) const;
+    void logError(std::string_view context) const;
+    static void bindText(sqlite3_stmt* stmt, int index, std::string_view value);
+    static std::string columnText(sqlite3_stmt* stmt, int index);
 
-    QString m_connectionName;
-    mutable QSqlDatabase m_db;
-    bool m_isOpen;
-    QString m_dbFilePath;
+    sqlite3* m_db = nullptr;
+    std::string m_dbFilePath;
 };
 
 #endif // SQLITESTORAGE_H
