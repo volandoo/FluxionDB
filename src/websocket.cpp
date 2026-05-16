@@ -240,6 +240,7 @@ void WebSocket::start(std::uint16_t port)
 void WebSocket::processMessage(ClientInfo& client, void* socket, ClientSender sender, std::string_view message)
 {
     ++client.messageCount;
+    const auto startedAt = std::chrono::steady_clock::now();
 
     bool ok = false;
     MessageRequest msg = MessageRequest::fromJson(message, &ok);
@@ -274,6 +275,23 @@ void WebSocket::processMessage(ClientInfo& client, void* socket, ClientSender se
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         response = handleMessage(client, msg, closeClient);
+    }
+
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - startedAt).count();
+    constexpr std::size_t LargeResponseBytes = 1024 * 1024;
+    constexpr std::int64_t SlowRequestMs = 250;
+    if (response.size() >= LargeResponseBytes || elapsedMs >= SlowRequestMs)
+    {
+        std::cerr << "Request "
+                  << "client=" << (client.name.empty() ? "-" : client.name)
+                  << " ip=" << client.ip
+                  << " id=" << client.id
+                  << " type=" << msg.type
+                  << " requestBytes=" << message.size()
+                  << " responseBytes=" << response.size()
+                  << " elapsedMs=" << elapsedMs
+                  << '\n';
     }
 
     if (!response.empty() || closeClient)
