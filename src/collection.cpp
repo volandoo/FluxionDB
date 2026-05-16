@@ -425,9 +425,12 @@ void Collection::deleteRecordsInRange(std::string_view key, std::int64_t fromTs,
     {
         m_data.erase(it);
     }
-    else
+    else if (records.size() * 3 < records.capacity())
     {
-        records.shrink_to_fit();
+        std::vector<DataRecord*> compacted;
+        compacted.reserve(records.size());
+        std::move(records.begin(), records.end(), std::back_inserter(compacted));
+        records.swap(compacted);
     }
 
     if (m_storage != nullptr)

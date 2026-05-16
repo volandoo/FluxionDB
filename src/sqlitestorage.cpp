@@ -1,6 +1,7 @@
 #include "sqlitestorage.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <unordered_set>
@@ -36,6 +37,28 @@ private:
 bool stepDone(sqlite3_stmt* stmt)
 {
     return sqlite3_step(stmt) == SQLITE_DONE;
+}
+
+void logDeleteIfSignificant(std::string_view operation,
+                            std::string_view collection,
+                            std::string_view document,
+                            sqlite3_int64 changedRows,
+                            std::chrono::steady_clock::time_point startedAt)
+{
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - startedAt).count();
+    if (changedRows < 1000 && elapsedMs < 250)
+    {
+        return;
+    }
+
+    std::cerr << "SQLite delete "
+              << "operation=" << operation
+              << " collection=" << collection
+              << " doc=" << (document.empty() ? "-" : std::string(document))
+              << " rows=" << changedRows
+              << " elapsedMs=" << elapsedMs
+              << '\n';
 }
 
 } // namespace
@@ -221,7 +244,13 @@ bool SqliteStorage::deleteRecord(std::string_view collection, std::string_view d
     sqlite3_bind_int64(stmt.get(), 1, timestamp);
     bindText(stmt.get(), 2, collection);
     bindText(stmt.get(), 3, document);
-    return stepDone(stmt.get());
+    const auto startedAt = std::chrono::steady_clock::now();
+    const bool ok = stepDone(stmt.get());
+    if (ok)
+    {
+        logDeleteIfSignificant("record", collection, document, sqlite3_changes64(m_db), startedAt);
+    }
+    return ok;
 }
 
 bool SqliteStorage::deleteRecordsInRange(std::string_view collection, std::string_view document, std::int64_t fromTs, std::int64_t toTs)
@@ -240,7 +269,13 @@ bool SqliteStorage::deleteRecordsInRange(std::string_view collection, std::strin
     bindText(stmt.get(), 2, document);
     sqlite3_bind_int64(stmt.get(), 3, fromTs);
     sqlite3_bind_int64(stmt.get(), 4, toTs);
-    return stepDone(stmt.get());
+    const auto startedAt = std::chrono::steady_clock::now();
+    const bool ok = stepDone(stmt.get());
+    if (ok)
+    {
+        logDeleteIfSignificant("range", collection, document, sqlite3_changes64(m_db), startedAt);
+    }
+    return ok;
 }
 
 bool SqliteStorage::deleteDocument(std::string_view collection, std::string_view document)
@@ -257,7 +292,13 @@ bool SqliteStorage::deleteDocument(std::string_view collection, std::string_view
     }
     bindText(stmt.get(), 1, collection);
     bindText(stmt.get(), 2, document);
-    return stepDone(stmt.get());
+    const auto startedAt = std::chrono::steady_clock::now();
+    const bool ok = stepDone(stmt.get());
+    if (ok)
+    {
+        logDeleteIfSignificant("document", collection, document, sqlite3_changes64(m_db), startedAt);
+    }
+    return ok;
 }
 
 bool SqliteStorage::deleteCollection(std::string_view collection)
@@ -273,11 +314,13 @@ bool SqliteStorage::deleteCollection(std::string_view collection)
         return false;
     }
     bindText(records.get(), 1, collection);
+    const auto startedAt = std::chrono::steady_clock::now();
     if (!stepDone(records.get()))
     {
         logError("Failed to delete collection records");
         return false;
     }
+    const sqlite3_int64 recordRows = sqlite3_changes64(m_db);
 
     Statement kv(m_db, "DELETE FROM key_values WHERE collection = ?");
     if (!kv)
@@ -291,6 +334,7 @@ bool SqliteStorage::deleteCollection(std::string_view collection)
         logError("Failed to delete collection key values");
         return false;
     }
+    logDeleteIfSignificant("collection", collection, {}, recordRows + sqlite3_changes64(m_db), startedAt);
     return true;
 }
 
